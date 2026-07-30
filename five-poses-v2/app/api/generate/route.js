@@ -64,7 +64,7 @@ async function callFal(route, { prompt, images, aspectKey, resolutionKey, engine
   if (!imgRes.ok) return { error: `Could not download the generated image (${imgRes.status}).` };
   const buf = Buffer.from(await imgRes.arrayBuffer());
   const mime = imgRes.headers.get('content-type') || 'image/png';
-  return { image: `data:${mime};base64,${buf.toString('base64')}` };
+  return { bytes: buf, mime };
 }
 
 // --- Gemini (Nano Banana) ---------------------------------------------------
@@ -128,7 +128,7 @@ async function callGemini(route, { prompt, images, aspectKey, resolutionKey, eng
   }
 
   const mime = inline.mimeType || inline.mime_type || 'image/png';
-  return { image: `data:${mime};base64,${inline.data}` };
+  return { bytes: Buffer.from(inline.data, 'base64'), mime };
 }
 
 // --- Handler ----------------------------------------------------------------
@@ -165,7 +165,14 @@ export async function POST(request) {
       return NextResponse.json({ error: result.error, detail: result.detail || null }, { status: 502 });
     }
 
-    return NextResponse.json({ image: result.image, engine: route.id, label: route.label });
+    return new Response(result.bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': result.mime,
+        'Cache-Control': 'no-store',
+        'X-Engine': route.id,
+      },
+    });
   } catch (err) {
     return fail(
       'The generation request failed before an image came back. If this took close to a minute, drop the output resolution or use a smaller reference.',
