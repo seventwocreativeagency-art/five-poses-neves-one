@@ -1,6 +1,11 @@
 // app/api/generate/route.js
 import { NextResponse } from 'next/server';
-import { routeFor, aspectFor } from '../../../lib/engines';
+import {
+  routeFor,
+  aspectRatioFor,
+  dimensionsFor,
+  geminiImageSizeFor,
+} from '../../../lib/engines';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -12,33 +17,36 @@ function fail(message, status = 400, detail) {
 
 // --- Seedream via fal -------------------------------------------------------
 
-async function callFal(route, { prompt, images, aspectKey, engine }) {
+async function postToFal(route, key, body) {
+  const res = await fetch(`https://fal.run/${route.path}`, {
+    method: 'POST',
+    headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { res, text: await res.text() };
+}
+
+async function callFal(route, { prompt, images, aspectKey, resolutionKey, engine }) {
   const key = process.env.FAL_KEY;
   if (!key) {
     return { error: 'FAL_KEY is not set. Add it in Vercel under Settings, Environment Variables, then redeploy.' };
   }
 
-  const body = {
-    prompt,
-    image_urls: images,
-    image_size: aspectFor(engine, aspectKey),
-    num_images: 1,
-    enable_safety_checker: false,
-  };
+  const base = { prompt, image_urls: images, num_images: 1, enable_safety_checker: false };
+  const dims = dimensionsFor(engine, aspectKey, resolutionKey);
 
-  const res = await fetch(`https://fal.run/${route.path}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Key ${key}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  const text = await res.text();
-  if (!res.ok) {
-    return { error: `fal returned ${res.status}`, detail: text.slice(0, 900) };
+  // Explicit pixel dimensions give real control over output resolution, which
+  // is what fine repeats need. If this build of the model rejects the object
+  // form, fall back to the named size enum rather than failing the shot.
+  let { res, text } = await postToFal(route, key, { ...base, image_size: dims });
+  if (!res.ok && (res.status === 400 || res.status === 422)) {
+    ({ res, text } = await postToFal(route, key, {
+      ...base,
+      image_size: aspectRatioFor(engine, aspectKey),
+    }));
   }
+
+  if (!res.ok) return { error: `fal returned ${res.status}`, detail: text.slice(0, 900) };
 
   let data;
   try {
@@ -48,16 +56,12 @@ async function callFal(route, { prompt, images, aspectKey, engine }) {
   }
 
   const url = data?.images?.[0]?.url || data?.image?.url;
-  if (!url) {
-    return { error: 'fal returned no image.', detail: JSON.stringify(data).slice(0, 700) };
-  }
+  if (!url) return { error: 'fal returned no image.', detail: JSON.stringify(data).slice(0, 700) };
 
   // Pull the bytes back through our own origin so the browser canvas can read
   // them without tainting, and so the client always receives one consistent shape.
   const imgRes = await fetch(url);
-  if (!imgRes.ok) {
-    return { error: `Could not download the generated image (${imgRes.status}).` };
-  }
+  if (!imgRes.ok) return { error: `Could not download the generated image (${imgRes.status}).` };
   const buf = Buffer.from(await imgRes.arrayBuffer());
   const mime = imgRes.headers.get('content-type') || 'image/png';
   return { image: `data:${mime};base64,${buf.toString('base64')}` };
@@ -71,7 +75,7 @@ function splitDataUri(uri) {
   return { mimeType: match[1], data: match[2] };
 }
 
-async function callGemini(route, { prompt, images, aspectKey, engine }) {
+async function callGemini(route, { prompt, images, aspectKey, resolutionKey, engine }) {
   const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!key) {
     return { error: 'GEMINI_API_KEY is not set. Add it in Vercel under Settings, Environment Variables, then redeploy.' };
@@ -86,7 +90,9 @@ async function callGemini(route, { prompt, images, aspectKey, engine }) {
 
   const generationConfig = { responseModalities: ['TEXT', 'IMAGE'] };
   if (route.supportsImageConfig) {
-    generationConfig.imageConfig = { aspectRatio: aspectFor(engine, aspectKey) };
+    generationConfig.imageConfig = { aspectRatio: aspectRatioFor(engine, aspectKey) };
+    const imageSize = geminiImageSizeFor(engine, resolutionKey);
+    if (imageSize) generationConfig.imageConfig.imageSize = imageSize;
   }
 
   const res = await fetch(
@@ -99,9 +105,7 @@ async function callGemini(route, { prompt, images, aspectKey, engine }) {
   );
 
   const text = await res.text();
-  if (!res.ok) {
-    return { error: `Gemini returned ${res.status}`, detail: text.slice(0, 900) };
-  }
+  if (!res.ok) return { error: `Gemini returned ${res.status}`, detail: text.slice(0, 900) };
 
   let data;
   try {
@@ -137,7 +141,7 @@ export async function POST(request) {
     return fail('The request body could not be read. The images may be too large.', 413);
   }
 
-  const { engine, prompt, images, aspect } = payload || {};
+  const { engine, prompt, images, aspect, resolution } = payload || {};
 
   if (!prompt) return fail('No prompt was supplied.');
   if (!Array.isArray(images) || images.length === 0) {
@@ -145,7 +149,13 @@ export async function POST(request) {
   }
 
   const route = routeFor(engine);
-  const args = { prompt, images, aspectKey: aspect || '3:4', engine: route.id };
+  const args = {
+    prompt,
+    images,
+    aspectKey: aspect || '3:4',
+    resolutionKey: resolution || '2K',
+    engine: route.id,
+  };
 
   try {
     const result =
@@ -158,7 +168,7 @@ export async function POST(request) {
     return NextResponse.json({ image: result.image, engine: route.id, label: route.label });
   } catch (err) {
     return fail(
-      'The generation request failed before an image came back. If this took close to a minute, try a smaller reference image.',
+      'The generation request failed before an image came back. If this took close to a minute, drop the output resolution or use a smaller reference.',
       500,
       String(err && err.message ? err.message : err)
     );
