@@ -43,6 +43,7 @@ const REF_MAX_DIM = 1400;     // garment references
 const PATTERN_MAX_DIM = 2048; // pattern close-ups keep every motif edge
 const MODEL_MAX_DIM = 900;    // model head references
 const ANCHOR_MAX_DIM = 900;   // anchor frame when re-sent
+const SHEET_MAX_DIM = 2048;   // contact sheet of extra garment / footwear views
 const PAYLOAD_BUDGET = 3_400_000; // stay under Vercel's 4.5 MB request limit
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,39 @@ async function urlToDataUrl(url, maxDim = MODEL_MAX_DIM) {
     reader.readAsDataURL(blob);
   });
   return resizeDataUrl(raw, maxDim, 0.92);
+}
+
+// Both engines cap at six reference images per call, so a large reference set
+// cannot be sent one image per slot. Compositing them into a single high
+// resolution contact sheet gets every view in front of the engine using one
+// slot, and cuts the upload size at the same time.
+async function buildContactSheet(dataUrls, maxDim = SHEET_MAX_DIM) {
+  if (!dataUrls.length) return null;
+  if (dataUrls.length === 1) return dataUrls[0];
+
+  const imgs = await Promise.all(dataUrls.map(loadImage));
+  const cols = Math.ceil(Math.sqrt(imgs.length));
+  const rows = Math.ceil(imgs.length / cols);
+  const cell = Math.floor(maxDim / Math.max(cols, rows));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = cols * cell;
+  canvas.height = rows * cell;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  imgs.forEach((img, i) => {
+    const c = i % cols;
+    const r = Math.floor(i / cols);
+    const scale = Math.min(cell / img.width, cell / img.height);
+    const w = Math.round(img.width * scale);
+    const h = Math.round(img.height * scale);
+    ctx.drawImage(img, c * cell + (cell - w) / 2, r * cell + (cell - h) / 2, w, h);
+  });
+
+  return canvas.toDataURL('image/jpeg', 0.92);
 }
 
 // Progressively re-encode until the whole request fits inside Vercel's limit.
@@ -238,7 +272,7 @@ function RefSlot({ title, role, note, limit, items, onAdd, onRemove }) {
   async function handleFiles(event) {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
-    const maxDim = role === 'pattern' ? PATTERN_MAX_DIM : REF_MAX_DIM;
+    const maxDim = role === 'pattern' || role === 'logo' ? PATTERN_MAX_DIM : REF_MAX_DIM;
     const next = [];
     for (const file of files.slice(0, limit - items.length)) {
       const raw = await fileToDataUrl(file);
@@ -384,6 +418,7 @@ export default function Page() {
 
   const [garment, setGarment] = useState([]);
   const [pattern, setPattern] = useState([]);
+  const [logo, setLogo] = useState([]);
   const [footwear, setFootwear] = useState([]);
 
   const [selected, setSelected] = useState(POSES.map((p) => p.id));
@@ -392,6 +427,9 @@ export default function Page() {
   const [error, setError] = useState('');
   const [log, setLog] = useState([]);
   const [refineText, setRefineText] = useState({});
+  const [poseText, setPoseText] = useState(() =>
+    Object.fromEntries(POSES.map((p) => [p.id, p.description]))
+  );
 
   const route = useMemo(() => routeFor(engine), [engine]);
   const preset = useMemo(() => presetByKey(selectedModel), [selectedModel]);
@@ -439,13 +477,21 @@ export default function Page() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ engine, prompt, images: fitted, aspect, resolution }),
     });
-    const data = await res
-      .json()
-      .catch(() => ({ error: 'The server sent back an unreadable response.' }));
-    if (!res.ok || data.error) {
+    if (!res.ok) {
+      const data = await res
+        .json()
+        .catch(() => ({ error: `The engine returned ${res.status} with no readable message.` }));
       throw new Error([data.error, data.detail].filter(Boolean).join(' — '));
     }
-    return data.image;
+    // Success comes back as raw image bytes, not JSON. Base64 inside JSON
+    // overflowed the response limit at 2K and broke the parse.
+    const blob = await res.blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('The generated image could not be read.'));
+      reader.readAsDataURL(blob);
+    });
   }
 
   async function runSet(poseIds) {
@@ -493,31 +539,53 @@ export default function Page() {
 
       const modelImages = await modelRefsFor(pose);
 
-      const refs = [];
-      const images = [];
-      garment.forEach((src) => {
-        refs.push({ role: 'garment' });
-        images.push(src);
-      });
-      pattern.forEach((src) => {
-        refs.push({ role: 'pattern' });
-        images.push(src);
-      });
-      modelImages.forEach((src, i) => {
-        refs.push({ role: i === 0 && preset ? 'modelAngle' : 'model' });
-        images.push(src);
-      });
-      footwear.forEach((src) => {
-        refs.push({ role: 'footwear' });
-        images.push(src);
-      });
-      if (!isAnchor && anchorImage) {
-        refs.push({ role: 'anchor' });
-        images.push(anchorImage);
-      }
+      // Priority order. Everything the engine needs to hold identity and print
+      // must survive the cap, so budget is allocated deliberately rather than
+      // letting a trailing slice decide what gets dropped.
+      // Slot budget. Both engines cap at six references per call, so slots are
+      // filled by priority and the least load-bearing are the ones that miss
+      // out. Identity, the garment and the emblem are never what gets dropped.
+      const garmentSheet =
+        garment.length > 1 ? await buildContactSheet(garment.slice(1)) : null;
+      const logoImage = logo.length > 1 ? await buildContactSheet(logo) : logo[0] || null;
+      const footwearImage =
+        footwear.length > 1 ? await buildContactSheet(footwear) : footwear[0] || null;
 
-      const trimmed = refs.slice(0, route.maxRefs);
-      const trimmedImages = images.slice(0, route.maxRefs);
+      const candidates = [
+        { role: 'garment', src: garment[0], priority: 1 },
+        { role: 'modelAngle', src: modelImages[0], priority: 2 },
+        { role: 'anchor', src: !isAnchor ? anchorImage : null, priority: 3 },
+        { role: 'logo', src: logoImage, priority: 4 },
+        { role: 'pattern', src: pattern[0], priority: 5 },
+        { role: 'garmentSheet', src: garmentSheet, priority: 6 },
+        {
+          role: footwear.length > 1 ? 'footwearSheet' : 'footwear',
+          src: footwearImage,
+          priority: 7,
+        },
+        { role: 'model', src: modelImages[1], priority: 8 },
+      ].filter((c) => !!c.src);
+
+      // Presentation order for the reference map, independent of priority.
+      const displayOrder = [
+        'garment',
+        'garmentSheet',
+        'pattern',
+        'logo',
+        'modelAngle',
+        'model',
+        'footwear',
+        'footwearSheet',
+        'anchor',
+      ];
+
+      const chosen = [...candidates]
+        .sort((a, b) => a.priority - b.priority)
+        .slice(0, route.maxRefs)
+        .sort((a, b) => displayOrder.indexOf(a.role) - displayOrder.indexOf(b.role));
+
+      const trimmed = chosen.map((c) => ({ role: c.role }));
+      const trimmedImages = chosen.map((c) => c.src);
 
       const prompt = buildPrompt({
         engine,
@@ -527,6 +595,8 @@ export default function Page() {
         isChild,
         hasAnchor: !isAnchor && !!anchorImage,
         notes,
+        overrideDescription:
+          poseText[pose.id] !== pose.description ? poseText[pose.id] : '',
       });
 
       try {
@@ -564,6 +634,10 @@ export default function Page() {
     });
     pattern.forEach((src) => {
       refs.push({ role: 'pattern' });
+      images.push(src);
+    });
+    logo.slice(0, 1).forEach((src) => {
+      refs.push({ role: 'logo' });
       images.push(src);
     });
 
@@ -648,10 +722,10 @@ export default function Page() {
             <RefSlot
               title="Garment"
               role="garment"
-              limit={3}
+              limit={6}
               items={garment}
-              note="A photograph of the physical garment: flat lay or ghost mannequin, square on."
-              onAdd={(next) => setGarment((prev) => [...prev, ...next].slice(0, 3))}
+              note="Up to 6 views of the same garment: front, back, side, collar, cuff, hem. The first is sent at full resolution; the rest are composited into one contact sheet."
+              onAdd={(next) => setGarment((prev) => [...prev, ...next].slice(0, 6))}
               onRemove={(i) => setGarment((prev) => prev.filter((_, x) => x !== i))}
             />
             <RefSlot
@@ -664,30 +738,61 @@ export default function Page() {
               onRemove={(i) => setPattern((prev) => prev.filter((_, x) => x !== i))}
             />
             <RefSlot
+              title="Logo / emblem"
+              role="logo"
+              limit={2}
+              items={logo}
+              note="A macro of the brand mark on this garment, shot square on and sharp. Highest-value reference you can give — logo distortion is the client's most-cited defect."
+              onAdd={(next) => setLogo((prev) => [...prev, ...next].slice(0, 2))}
+              onRemove={(i) => setLogo((prev) => prev.filter((_, x) => x !== i))}
+            />
+            <RefSlot
               title="Footwear"
               role="footwear"
-              limit={1}
+              limit={5}
               items={footwear}
-              note="Optional."
-              onAdd={(next) => setFootwear(next.slice(0, 1))}
-              onRemove={() => setFootwear([])}
+              note="Optional. Up to 5 views of the same pair, composited into one contact sheet."
+              onAdd={(next) => setFootwear((prev) => [...prev, ...next].slice(0, 5))}
+              onRemove={(i) => setFootwear((prev) => prev.filter((_, x) => x !== i))}
             />
           </div>
 
           <div className="panel">
             <h2>Shots</h2>
             {POSES.map((pose) => (
-              <div className="pose-row" key={pose.id}>
-                <input
-                  id={`pose-${pose.id}`}
-                  type="checkbox"
-                  checked={selected.includes(pose.id)}
-                  onChange={() => togglePose(pose.id)}
-                />
-                <label htmlFor={`pose-${pose.id}`} className="nm">
-                  {pose.name}
-                  {pose.anchor ? <span className="tag">ANCHOR</span> : null}
-                </label>
+              <div className="pose-block" key={pose.id}>
+                <div className="pose-row">
+                  <input
+                    id={`pose-${pose.id}`}
+                    type="checkbox"
+                    checked={selected.includes(pose.id)}
+                    onChange={() => togglePose(pose.id)}
+                  />
+                  <label htmlFor={`pose-${pose.id}`} className="nm">
+                    {pose.name}
+                    {pose.anchor ? <span className="tag">ANCHOR</span> : null}
+                  </label>
+                  {poseText[pose.id] !== pose.description ? (
+                    <button
+                      className="ghost tiny"
+                      onClick={() =>
+                        setPoseText((prev) => ({ ...prev, [pose.id]: pose.description }))
+                      }
+                    >
+                      Reset
+                    </button>
+                  ) : null}
+                </div>
+                {selected.includes(pose.id) ? (
+                  <textarea
+                    className="pose-text"
+                    value={poseText[pose.id]}
+                    onChange={(e) =>
+                      setPoseText((prev) => ({ ...prev, [pose.id]: e.target.value }))
+                    }
+                    rows={4}
+                  />
+                ) : null}
               </div>
             ))}
             <div className="hint">

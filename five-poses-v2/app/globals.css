@@ -652,3 +652,44 @@ details summary {
 .qc-row input:checked ~ span strong {
   color: var(--ok);
 }
+
+/* ---- editable pose blocks ---- */
+
+.pose-block {
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+}
+
+.pose-block:last-of-type {
+  border-bottom: none;
+}
+
+.pose-block .pose-row {
+  border-bottom: none;
+  align-items: center;
+}
+
+.pose-block .pose-row .nm {
+  flex: 1;
+}
+
+button.tiny {
+  padding: 2px 7px;
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+textarea.pose-text {
+  font-size: 12px;
+  line-height: 1.45;
+  min-height: 0;
+  margin-top: 4px;
+  color: var(--text-dim);
+}
+
+textarea.pose-text:focus {
+  color: var(--text);
+}
