@@ -59,12 +59,22 @@ export const PATTERN_RULES = `${PATTERN_LOCK}\n\n${OBSERVED_FAILURES}`;
 // ---------------------------------------------------------------------------
 
 export const STUDIO = `STUDIO AND LIGHTING:
-- Clean seamless pure white e-commerce studio background, hex #FFFFFF, evenly lit, no gradient banding, no visible backdrop seam, no props, no furniture, no text or watermark anywhere in the frame.
+- Clean seamless PURE WHITE e-commerce studio background, hex #FFFFFF exactly. Not cream, not ivory, not beige, not warm grey, not off-white. If the reference photographs have a warm or tinted backdrop, do not carry that tint across — the output backdrop is neutral pure white regardless of what the references show. Evenly lit, no gradient banding, no visible backdrop seam, no props, no furniture, no text or watermark anywhere in the frame.
 - Large soft key light slightly camera-left with a broad fill on the opposite side and a soft overhead. Even, wraparound illumination with no split lighting, no hard shadow line down the face or body, and no colour cast.
 - Soft contact shadow under the shoes only. Nothing else casts a shadow onto the backdrop.
 - Neutral white balance. Exposure holds detail in both the brightest fabric highlight and the darkest fold.
 - Expose for the subject, not the backdrop. Do not brighten, lift, lighten or wash out the person to separate them from the white background. The background is lit separately from the subject and must not affect how dark the skin reads.
 - Shot on a full-frame camera with an 85mm lens at f/8, sharp front to back, commercial catalogue quality.`;
+
+// The garment references supplied for catalogue work are almost always
+// on-model shots of a different person. Without this, the engine blends that
+// person with the model reference, or simply invents someone.
+export const IDENTITY_LOCK = `MODEL IDENTITY LOCK (READ BEFORE ANYTHING ELSE):
+- The model reference photographs are the ONLY source of the person's identity. The face, bone structure, jawline, nose, mouth, eyes, eyebrows, hairline, hair length, hair colour, hair texture and skin tone all come from those photographs and nowhere else.
+- ANY PERSON VISIBLE IN THE GARMENT REFERENCE PHOTOGRAPHS IS NOT THE MODEL. They are present only because the product was photographed on a body. Ignore them completely: do not copy their face, their hair, their hair length, their build, their skin tone or their pose. Take only the garment from those images.
+- Do not blend, average or merge features from two different people. If the garment reference shows a person with long hair and the model reference has short hair, the output has the model reference's short hair, and the reverse.
+- Do not invent a new person. Do not substitute a generic catalogue face. If the model reference shows a specific individual, that exact individual appears in the output.
+- The person must be recognisable as the same individual as the model reference at a glance, in every frame of the set.`
 
 export const MODEL_RULE = `MODEL IDENTITY:
 - The same individual person appears in every frame of the set: identical face, bone structure, jawline, nose, eye shape, eyebrows, hairline, hairstyle, hair colour, body proportions, height and build.
@@ -139,26 +149,27 @@ export const POSES = [
     camera:
       'The camera is directly in front of the model at chest height, perpendicular to the shoulder line.',
     description:
-      'Straight-on frontal view. The model faces the camera squarely with shoulders parallel to the lens and both collarbones equally visible. Standing tall, weight even on both feet, feet a little under shoulder width apart, both arms relaxed and hanging naturally at the sides with a small gap between arm and torso so the full side seam reads. Both eyes look directly into the lens.',
+      'Full-length frontal view, facing the camera. Natural catalogue stance: weight settled onto one leg with the other knee softly bent and the hip gently cocked, feet roughly hip-width apart. One hand rests easily in a front pocket, the other hangs relaxed at the side. Shoulders level and square to the lens, chin level, looking directly into the camera with a calm neutral expression.',
     mustSee:
-      'the full front of the garment, both shoulders equally, the complete placket or centre front, and both sleeves',
+      'the whole body from the top of the head to the soles of the shoes, both shoes complete and uncropped, the full front of the garment, both shoulders, the centre front and both sleeves',
     mustNotSee:
-      'any rotation of the torso, any turn of the head, the back of the garment, or a three-quarter angle',
+      'the feet or shoes cut off by the frame, a crop at the knee or thigh, a rotated torso, or a stiff symmetrical stance with both arms rigid at the sides',
     framing:
-      'Full length. Crop from just above the top of the head to just below the soles of the shoes, with even margin left and right.',
+      'FULL LENGTH. The entire body is in frame with clear space above the head and below the shoes. The shoes must be completely visible and must not touch or cross the bottom edge.',
   },
   {
     id: 'three-quarter',
     name: 'Three-Quarter Turn',
     angles: ['-b'],
-    camera: 'The camera stays front-on while the model rotates.',
+    camera: 'The camera stays front-on at chest height while the model rotates.',
     description:
-      'The model rotates the body approximately forty-five degrees toward camera-left, so the torso is clearly angled and one shoulder sits nearer the lens than the other. The head turns back toward the camera. Weight settles on the back leg with the front foot slightly forward. The near arm hangs relaxed at the side, the far arm hangs naturally so the shoulder line and side seam stay visible. This is a genuine forty-five degree rotation, not a slight shift off centre.',
+      'The body rotates approximately forty-five degrees toward camera-left so the torso is clearly angled and one shoulder sits nearer the lens. The head turns back toward the camera. Weight settles on the back leg with the front foot slightly forward. Arms folded loosely across the waist, or the near hand resting at the hip with the far arm relaxed — a natural, unforced catalogue attitude. This is a genuine forty-five degree rotation, not a slight shift off centre.',
     mustSee:
-      'the front and one side of the garment simultaneously, the side seam, one shoulder clearly nearer the camera, and the depth of the chest',
+      'the front and one side of the garment at the same time, the side seam, one shoulder clearly nearer the camera, and the depth of the chest',
     mustNotSee:
-      'a square frontal stance, shoulders parallel to the lens, or a pose that reads as a front view with the head slightly turned',
-    framing: 'Full length. Crop from just above the top of the head to just below the soles of the shoes.',
+      'a square frontal stance, shoulders parallel to the lens, or a pose that reads as a front view with only the head turned',
+    framing:
+      'Three-quarter length. Crop from just above the top of the head to mid-thigh, or full length if the lower garment matters.',
   },
   {
     id: 'side-profile',
@@ -166,12 +177,13 @@ export const POSES = [
     angles: ['-d'],
     camera: 'The camera is at ninety degrees to the model, level with the chest.',
     description:
-      'A true full profile. The model stands with the body turned a full ninety degrees to the camera so only one side of the body faces the lens, and the head faces forward in the same direction as the body, showing the face in complete profile. Feet together, arms hanging straight and relaxed at the sides, posture neutral so the garment silhouette, side seam and hem line read cleanly against the background.',
+      'A true full profile. The body turns a full ninety degrees to the camera so only one side faces the lens, and the head faces forward in the same direction as the body, showing the face in complete profile. Weight settled naturally, the near hand tucked into a pocket or hanging relaxed at the side, shoulders tall, gaze level and forward.',
     mustSee:
-      'the complete outline of the face in profile — forehead, nose, lips and chin against the background — one shoulder only, the side seam running the full length, and the garment silhouette',
+      'the complete outline of the face in profile — forehead, nose, lips and chin read against the background — one shoulder only, the side seam running the full length, and the garment silhouette',
     mustNotSee:
       'both eyes, both sides of the face, the front of the chest, a three-quarter angle, or the head turned back toward the camera',
-    framing: 'Full length. Crop from just above the top of the head to just below the soles of the shoes.',
+    framing:
+      'Three-quarter to full length. Crop from just above the top of the head to mid-thigh or below.',
   },
   {
     id: 'full-back',
@@ -179,26 +191,27 @@ export const POSES = [
     angles: ['-d'],
     camera: 'The camera is directly behind the model at chest height.',
     description:
-      'A straight-on rear view. The model stands with the back squarely to the camera and the head facing directly away from the lens, so no facial features are visible at all. Standing tall, weight even on both feet, shoulders level, arms relaxed at the sides with a small gap from the torso so the back panel, yoke and hem read fully.',
+      'A straight-on rear view. The back is squarely to the camera and the head faces directly away from the lens, so no facial features are visible. Weight settled onto one leg with a subtle shift of the hips, shoulders level, arms relaxed at the sides with a small gap from the torso, or one hand resting in a back pocket, so the back panel, yoke and hem read fully.',
     mustSee:
       'the entire back panel of the garment, the yoke, the back of the collar, the back of both sleeves, and the back of the head and hairline',
     mustNotSee:
-      'the face, either eye, the nose, the front of the garment, or the head turned to look over the shoulder',
-    framing: 'Full length. Crop from just above the top of the head to just below the soles of the shoes.',
+      'the face, either eye, the nose, the front of the garment, or the head turned to look back over the shoulder',
+    framing:
+      'Three-quarter to full length. Crop from just above the top of the head to mid-thigh or below.',
   },
   {
-    id: 'detail-half',
-    name: 'Half Body Detail',
+    id: 'close-detail',
+    name: 'Close Detail',
     angles: [''],
-    camera: 'The camera is directly in front of the model, moved closer.',
+    camera: 'The camera is directly in front of the model and moved in close.',
     description:
-      'A frontal upper-body view. The model faces the camera squarely with a slight lift of the chin, shoulders level and parallel to the lens. One hand rests relaxed at the hip and the other hangs loose at the side so the chest, placket, collar and print area are completely unobstructed.',
+      'A tight upper-body detail shot. The model faces the camera with the head very slightly turned, shoulders level, looking into the lens. Nothing obstructs the chest: no crossed arms, no hand raised into frame. The collar, placket, buttons, any chest emblem and the fabric structure all sit large in the frame and are the subject of the photograph.',
     mustSee:
-      'the collar, the full chest area, the upper placket, any chest emblem, and the fabric weave at close range',
+      'the collar and its stand, the full placket with every button, any chest emblem at large scale with its stitching legible, and the weave structure of the cloth at close range',
     mustNotSee:
-      'the legs below mid-thigh, the feet, a full-length framing, or any rotation of the torso',
+      'the waist, the hips, the legs, the hands, a full-length or half-length framing, or any part of the garment being covered by an arm',
     framing:
-      'Crop from just above the top of the head to mid-thigh. This is a tighter frame than the full-length shots, so garment detail, weave and print sit large in frame.',
+      'TIGHT. Crop from just above the top of the head to just below the chest. This is far closer than the other four shots — the garment detail fills the frame.',
   },
 ];
 
@@ -212,7 +225,13 @@ export function poseById(id) {
 
 const ROLE_TEXT = {
   garment:
-    'the garment product shot. This is the ground truth for cut, colour, construction, pattern layout and every mark printed or stitched on it.',
+    'the primary garment product shot. This is the ground truth for cut, colour, construction, pattern layout and every mark printed or stitched on it.',
+  garmentSheet:
+    'a CONTACT SHEET of additional photographs of THE SAME SINGLE GARMENT, arranged in a grid on white. Every panel shows that one identical product photographed from a different angle, distance or detail — front, back, side, collar, cuff, hem, placket, trim, branding. This is ONE garment, not several different products: do not treat the panels as separate items, do not combine them into a new design, and do not average them. Read every panel and use them together to build a complete understanding of how this single garment is constructed, then reproduce that one garment exactly.',
+  logo:
+    'a MACRO PHOTOGRAPH OF THE BRAND EMBLEM exactly as it appears on this garment. This is the definitive ground truth for the mark and outranks every other reference for it. Reproduce the emblem from this image: the exact silhouette, every internal shape and detail, the correct number of limbs and elements, the exact proportions, the thread colour, the stitch direction and raised embroidered surface, and above all the exact facing direction shown here. Place it at the size and position shown on the garment reference. It must be instantly recognisable at 100 percent zoom, and it must never be mirrored, rotated, simplified, smoothed, recoloured or redrawn from imagination.',
+  footwearSheet:
+    'a CONTACT SHEET of additional photographs of THE SAME SINGLE PAIR OF SHOES, arranged in a grid on white. Every panel shows that one identical pair from a different angle or in detail. This is ONE pair, not several: read every panel and reproduce that exact pair, correctly scaled to the body and matched left to right.',
   pattern:
     'a close-up of the garment pattern. This is the ground truth for motif shape, repeat pitch, weave detail and lettering. Read it at full resolution.',
   model:
@@ -267,8 +286,12 @@ export function buildPrompt({
   isChild = false,
   hasAnchor = false,
   notes = '',
+  overrideDescription = '',
 }) {
-  const p = typeof pose === 'string' ? poseById(pose) : pose;
+  const base = typeof pose === 'string' ? poseById(pose) : pose;
+  const p = overrideDescription
+    ? { ...base, description: overrideDescription }
+    : base;
 
   const task = `TASK: Produce one professional fashion e-commerce photograph of a model wearing the exact garment shown in the references, in a white studio, at the exact camera angle described below. This is a garment transfer job, not a redesign. Every physical detail of the garment comes from the reference images; only the pose, the body and the lighting are being created.`;
 
@@ -285,6 +308,7 @@ export function buildPrompt({
   return assemble([
     task,
     buildReferenceMap(engine, refs),
+    IDENTITY_LOCK,
     poseBlock(p),
     PATTERN_RULES,
     buildDefectRules(),
@@ -319,6 +343,7 @@ export function buildRefinePrompt({ engine, refs, instruction, isChild = false }
   return assemble([
     `TASK: Apply one targeted correction to the supplied photograph. Change only what the correction asks for. Everything else in the frame stays pixel-identical: same person, same face, same skin tone, same garment, same pattern, same pose, same camera angle, same crop, same lighting, same background.`,
     buildReferenceMap(engine, refs),
+    IDENTITY_LOCK,
     `CORRECTION REQUESTED:\n${instruction}`,
     PATTERN_RULES,
     buildDefectRules(),
