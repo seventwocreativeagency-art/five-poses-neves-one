@@ -1227,3 +1227,76 @@ select {
 .version-link:hover {
   text-decoration: underline;
 }
+
+/* ---------------------------------------------------------------------------
+   Garment colour code — the hex override on the primary product.
+   --------------------------------------------------------------------------- */
+
+.hex-block { margin-top: 2px; }
+
+.hex-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.hex-title { font-weight: 600; color: var(--text); font-size: 13px; }
+
+.hex-row { display: flex; align-items: center; gap: 8px; }
+
+.hex-swatch {
+  width: 44px;
+  height: 38px;
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.hex-swatch::-webkit-color-swatch-wrapper { padding: 0; }
+.hex-swatch::-webkit-color-swatch { border: 0; border-radius: 5px; }
+
+.hex-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 9px 10px;
+  font-size: 13px;
+  font-family: var(--ui);
+}
+.hex-input::placeholder { color: var(--faint); }
+.hex-input:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+
+.hex-clear {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.hex-clear:hover { color: var(--text); border-color: var(--faint); }
+.hex-clear:hover { opacity: 1; }
+
+.hex-preview {
+  margin-top: 8px;
+  padding: 8px 11px;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.hex-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--faint);
+}
+.hex-warn { color: var(--brand-hi); }

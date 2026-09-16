@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "neves-test-"));
-for (const f of ["engines", "meta", "poses"]) {
+for (const f of ["engines", "meta", "poses", "colour"]) {
   const src = readFileSync(new URL(`../lib/${f}.js`, import.meta.url), "utf8").replace(
     /from "\.\/(\w+)"/g,
     'from "./$1.mjs"'
@@ -17,6 +17,7 @@ for (const f of ["engines", "meta", "poses"]) {
 }
 
 const engines = await import(`file://${join(tmp, "engines.mjs")}`);
+const colour = await import(`file://${join(tmp, "colour.mjs")}`);
 const meta = await import(`file://${join(tmp, "meta.mjs")}`);
 const poses = await import(`file://${join(tmp, "poses.mjs")}`);
 
@@ -221,6 +222,53 @@ check("kids strict mode omits the human-anatomy section", !kidStrict.includes("M
 const kidRefine = poses.buildKidsRefinePrompt("brighten the collar");
 check("kids refine keeps the no-person rule", kidRefine.includes("Do not render a child"));
 check("kids refine scopes the change", kidRefine.includes("brighten the collar"));
+
+// ---------------------------------------------------------------------------
+// Garment colour code
+// ---------------------------------------------------------------------------
+
+check("hex normalises with a hash", colour.normaliseHex("#1b2a4a") === "#1B2A4A");
+check("hex normalises without a hash", colour.normaliseHex("1b2a4a") === "#1B2A4A");
+check("shorthand hex expands", colour.normaliseHex("#0af") === "#00AAFF");
+check("whitespace is tolerated", colour.normaliseHex("  #1B2A4A  ") === "#1B2A4A");
+check("a half-typed hex is rejected", colour.normaliseHex("#1b2a") === null);
+check("a non-hex string is rejected", colour.normaliseHex("navy") === null);
+check("an empty value is rejected", colour.normaliseHex("") === null);
+check("describeHex names a dark blue", /blue/.test(colour.describeHex("#1B2A4A")));
+check("describeHex names pure black", colour.describeHex("#000000") === "pure black");
+check("describeHex names pure white", colour.describeHex("#FFFFFF") === "pure white");
+check("describeHex treats greys as neutral", /grey/.test(colour.describeHex("#7A7A7A")));
+check("colourPhrase carries the name and the hex", colour.colourPhrase("#1B2A4A").includes("#1B2A4A") && /blue/.test(colour.colourPhrase("#1B2A4A")));
+check("colourPhrase is empty for an invalid hex", colour.colourPhrase("nope") === "");
+check("readable ink is dark on a pale swatch", colour.readableInk("#FFFFFF") === "#000000");
+check("readable ink is light on a dark swatch", colour.readableInk("#1B2A4A") === "#FFFFFF");
+
+const phrase = colour.colourPhrase("#1B2A4A");
+const noColour = poses.buildPrompt({ posePrompt: "front", gender: "women", productDesc: "polo" });
+const withColour = poses.buildPrompt({ posePrompt: "front", gender: "women", productDesc: "polo", colour: phrase });
+
+check("no colour block when none is set", !noColour.includes("PRODUCT COLOUR OVERRIDE"));
+check("colour block appears when one is set", withColour.includes("PRODUCT COLOUR OVERRIDE"));
+check("colour block carries the hex", withColour.includes("#1B2A4A"));
+check("colour block protects logos and prints", withColour.includes("ARE NOT RECOLOURED"));
+check("colour block states it overrides earlier colour rules", withColour.includes("THIS OVERRIDES EVERY"));
+check("colour block leaves the secondary product alone", withColour.includes("SECONDARY product"));
+
+const reframeColour = poses.buildReframePrompt({ posePrompt: "side", productDesc: "polo", colour: phrase });
+check("reframe carries the colour override", reframeColour.includes("PRODUCT COLOUR OVERRIDE"));
+const refineColour = poses.buildRefinePrompt("fix the collar", { colour: phrase });
+check("refine carries the colour override", refineColour.includes("PRODUCT COLOUR OVERRIDE"));
+const kidsColour = poses.buildKidsPrompt({ slotFraming: "front", ageBand: "4-6", productDesc: "tee", colour: phrase });
+check("kidswear carries the colour override", kidsColour.includes("PRODUCT COLOUR OVERRIDE"));
+check("kidswear without colour is unchanged", !poses.buildKidsPrompt({ slotFraming: "front", ageBand: "4-6" }).includes("PRODUCT COLOUR OVERRIDE"));
+
+// Strict fidelity must not simultaneously demand the colour be preserved.
+const strictNo = poses.buildPrompt({ posePrompt: "front", productDesc: "polo", strict: true });
+const strictYes = poses.buildPrompt({ posePrompt: "front", productDesc: "polo", strict: true, colour: phrase });
+check("strict mode normally preserves product colours", strictNo.includes("Preserve the source product colours"));
+check("strict mode drops that line when recolouring", !strictYes.includes("- Preserve the source product colours."));
+check("strict mode still protects print colours when recolouring", strictYes.includes("Preserve the source colours of every print"));
+check("recolour is listed as a permitted change", strictYes.includes("base colour of the primary product"));
 
 rmSync(tmp, { recursive: true, force: true });
 

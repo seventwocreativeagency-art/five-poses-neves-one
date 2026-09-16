@@ -3,6 +3,7 @@
 import "./globals.css";
 
 import { useState, useEffect } from "react";
+import { normaliseHex, colourPhrase, describeHex, readableInk } from "../lib/colour";
 import {
   MODELS,
   MODEL_PRESETS,
@@ -329,12 +330,17 @@ export default function Page() {
   const [productDesc, setProductDesc] = useState("");
   const [secondaryDesc, setSecondaryDesc] = useState("");
   const [notes, setNotes] = useState("");
+  const [productHex, setProductHex] = useState("");
   const [model, setModel] = useState(DEFAULT_ENGINE);
   const [aspect, setAspect] = useState("3:4");
   const [quality, setQuality] = useState("high");
   const [background, setBackground] = useState("opaque");
   // --- added by the GPT Image 2.5 layer. All default to current behaviour. ---
   const [strict, setStrict] = useState(false);
+  // An unreadable or empty hex means no override at all, so a half-typed value
+  // can never silently recolour a run.
+  const cleanHex = normaliseHex(productHex);
+  const colour = cleanHex ? colourPhrase(cleanHex) : null;
   const [detail, setDetail] = useState("standard");
   const [outputFormat, setOutputFormat] = useState("png");
   const [openDiag, setOpenDiag] = useState({}); // slot -> bool
@@ -605,9 +611,10 @@ export default function Page() {
             notes,
             strict,
             roleLines,
+            colour,
           })
         : mode === "reframe"
-          ? buildReframePrompt({ posePrompt: picked.prompt, gender, faceDesc, productDesc, notes, strict, roleLines })
+          ? buildReframePrompt({ posePrompt: picked.prompt, gender, faceDesc, productDesc, notes, strict, roleLines, colour })
           : buildPrompt({
               posePrompt,
               focus: FOCUS[garmentType],
@@ -623,6 +630,7 @@ export default function Page() {
               notes,
               strict,
               roleLines,
+              colour,
             });
       const sendImages = await fitPayload(images);
       const res = await fetch(routeFor(model), {
@@ -695,7 +703,7 @@ export default function Page() {
       const size = sizeFor(model, ratioObj);
       const prompt = isKids
         ? buildKidsRefinePrompt(text, { strict, roleLines, productDesc })
-        : buildRefinePrompt(text, { strict, roleLines, productDesc });
+        : buildRefinePrompt(text, { strict, roleLines, productDesc, colour });
       const sendImages = await fitPayload(images);
       const res = await fetch(routeFor(model), {
         method: "POST",
@@ -888,6 +896,51 @@ export default function Page() {
               value={secondaryDesc}
               onChange={(e) => setSecondaryDesc(e.target.value)}
             />
+
+            <div className="sub-divider" />
+            <div className="hex-block">
+              <div className="hex-head">
+                <span className="hex-title">Garment colour code</span>
+                <span className="zone-opt">optional</span>
+              </div>
+              <div className="hex-row">
+                <input
+                  type="color"
+                  className="hex-swatch"
+                  aria-label="Pick the product colour"
+                  value={cleanHex || "#000000"}
+                  onChange={(e) => setProductHex(e.target.value.toUpperCase())}
+                />
+                <input
+                  type="text"
+                  className="hex-input"
+                  spellCheck={false}
+                  placeholder="#RRGGBB — leave blank to keep original"
+                  value={productHex}
+                  onChange={(e) => setProductHex(e.target.value)}
+                />
+                {productHex ? (
+                  <button type="button" className="hex-clear" onClick={() => setProductHex("")}>
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+              {cleanHex ? (
+                <div className="hex-preview" style={{ background: cleanHex, color: readableInk(cleanHex) }}>
+                  {describeHex(cleanHex)} · {cleanHex}
+                </div>
+              ) : productHex ? (
+                <p className="hex-note hex-warn">
+                  That is not a readable hex code yet, so it is being ignored. Use three or six
+                  characters, for example #1B2A4A.
+                </p>
+              ) : null}
+              <p className="hex-note">
+                Recolours the MAIN fabric of the primary product only — logos, prints, text and trims
+                stay as-is. Matched as closely as studio lighting allows, so expect a close match
+                rather than a pixel-exact one (a final eyedropper tweak may still help).
+              </p>
+            </div>
           </div>
 
           {!isKids && (

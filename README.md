@@ -55,6 +55,43 @@ The app has also been rebranded to NEVES ONE.
 
 ---
 
+## Garment colour code
+
+Section 1, under the secondary product. Leave it blank and the product colour is
+reproduced exactly from the references, which is the normal case. Enter a hex
+value and the **main fabric of the primary product** is re-dyed to it.
+
+What is protected and never recoloured:
+
+- logos, emblems, embroidery and wordmarks
+- prints, patterns, stripes and checks, including their geometry
+- text and lettering
+- contrast collars, cuffs, plackets, tipping and hems
+- buttons, zips, eyelets, drawcords and hardware
+- the secondary product, the shoes, the model, the background and the lighting
+
+The hex is sent to the engine alongside a plain-language name for the same
+colour, so `#1B2A4A` goes across as "very deep soft blue, hex #1B2A4A". A hex on
+its own gets approximated; a named colour lands much closer.
+
+Expect a close match, not a pixel-exact one. The fabric still has to shade
+correctly under studio light, so the flat lit areas sit on the target value while
+folds read darker and highlights lighter. For pixel-exact work, finish with an
+eyedropper in your editor.
+
+A half-typed or invalid hex is ignored rather than guessed at, and the field says
+so. The Clear button removes the override.
+
+The colour carries through every path: the five-pose set, reframes, refine passes
+and kidswear. A refine cannot quietly revert the product to its original colour.
+
+Strict fidelity mode is aware of it. Normally strict mode demands the source
+colours be preserved, which would directly contradict a recolour; with a hex set,
+that rule is narrowed to prints, logos, text and trims, and the base fabric
+colour is added to the permitted-changes list.
+
+---
+
 ## The engine dropdown
 
 | Choose this | When |
