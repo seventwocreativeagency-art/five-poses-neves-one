@@ -1,175 +1,239 @@
-# Five Poses v2
+# NEVES ONE · Five Poses
 
-Five-shot fashion e-commerce image generation with pattern-locked references.
-
-Generation runs on three providers:
-
-- **GPT Image 2.5** (OpenAI) — `gpt-image-2.5-sunburst` is the default engine.
-  Released 8 September 2026, it is OpenAI's most capable model for image editing
-  and the strongest of the three at changing one thing while leaving the rest of
-  the frame untouched. `gpt-image-2.5-flare` is the same family at roughly half
-  the latency, for volume runs and quick tests.
-- **Seedream 4.5** (ByteDance, via fal) — strong print, weave and check retention.
-- **Nano Banana** (Google Gemini image models) — highest fidelity on micro-prints
-  and fine lettering, and a useful second opinion when the default drifts.
-
-All three are kept so the same references and prompt can be compared side by
-side, and so a misbehaving engine is a dropdown change rather than a rebuild.
+Put your product on your model and generate five consistent catalogue shots.
 
 ---
 
-## What is different from v1
+## Two apps, one deployment
 
-- **Pattern lock.** A dedicated rule block treats every print, check, stripe,
-  emblem and letterform as photographic data to transfer, never as a style to
-  redraw. Three levels: standard, strict, forensic.
-- **Pattern close-up slot.** A second reference specifically for a tight crop of
-  the repeat. This is the single biggest fix for print distortion.
-- **Pattern test button.** Generates the anchor shot alone so a print can be
-  checked in one call instead of five.
-- **Engine switch.** Same references, same prompt, different engine, so results
-  can be compared side by side.
-- **Anchor-first generation.** The Full Front shot is generated first and passed
-  to every other shot as the master reference, holding identity, colour and
-  pattern placement across the set.
-- **Raw copies preserved.** Desaturation and skin grain are applied to the
-  display and download copy only. The raw frame stays clean as the identity
-  anchor and the base for refine passes.
+| URL | What it is |
+| --- | --- |
+| `/` | **NEVES ONE (v2)** — the new build. All engines, rebrand, kidswear, diagnostics. |
+| `/classic` | **Five Poses (v1)** — your original app, untouched. |
 
----
+Both run off the same `OPENAI_API_KEY` and the same Vercel project. There is a
+button in the top-right corner of each to switch to the other:
 
-## Setup
+- on `/classic`, an orange **NEVES ONE v2 →** button
+- on `/`, a **← Classic (v1)** button
 
-### 1. Get the API keys
+The classic app is a verbatim copy of the original code, deliberately isolated
+so the two can never affect each other:
 
-- **OpenAI** (for GPT Image 2.5, the default): https://platform.openai.com/api-keys
-  → create a key. Image generation is not available on the free tier, and the
-  per-minute image limit rises with your usage tier.
-- **fal** (for Seedream): https://fal.ai/dashboard/keys → create a key.
-- **Google AI Studio** (for Nano Banana): https://aistudio.google.com/apikey →
-  create a key. Image models need billing enabled on the Google Cloud project.
+- its own page (`app/classic/page.js`)
+- its own stylesheet (`app/classic/classic.css`)
+- its own prompt library (`lib/classic-poses.js`)
+- its own API route (`app/api/generate-classic/route.js`)
 
-### 2. Put the files in a GitHub repo
+Nothing in v2 imports anything from v1 or vice versa. Changing one cannot break
+the other. The classic app keeps its original four engines and its original
+60-second timeout.
 
-1. Go to https://github.com/new and create a new repository named
-   `five-poses-v2`. Leave it empty, do not add a README.
-2. On the new repo page, click **uploading an existing file**.
-3. Unzip the delivered folder on your computer, open it, select everything
-   **inside** it, and drag it into the browser window. The `app` and `lib`
-   folders must land at the top level of the repo, not inside another folder.
-4. Click **Commit changes**.
+## What's new in this version
 
-The repo should look like this:
+**GPT Image 2.5 Sunburst is now the engine the app opens on.**
 
-```
-package.json
-next.config.js
-.gitignore
-.env.example
-README.md
-app/
-  layout.js
-  globals.css
-  page.js
-  api/generate/route.js
-lib/
-  engines.js
-  poses.js
+It was already in the dropdown; it is now the default, so every run uses it
+unless someone picks something else. It is OpenAI's most capable model for image
+editing and the best of the list at changing one thing and leaving the rest of
+the frame alone.
+
+Its default quality is **high**, not max. Sunburst supports max, and it is still
+in the Quality dropdown, but max is several times the price of high per image
+with no visible gain on plain garments. Step up to xhigh or max on the jobs that
+need it, rather than paying for it on every draft.
+
+If Sunburst gives you trouble, pick GPT Image 2 from the same dropdown and you
+are back exactly where you were. Nothing else needs changing. To move the
+default back permanently, change one line in `lib/engines.js`:
+
+```js
+export const DEFAULT_ENGINE = "gpt-image-2";
 ```
 
-### 3. Deploy on Vercel
-
-1. https://vercel.com/new → **Import** the `five-poses-v2` repo.
-2. Framework preset: Next.js. Leave every other setting alone.
-3. Before clicking Deploy, open **Environment Variables** and add:
-   - `FAL_KEY` = your fal key
-   - `GEMINI_API_KEY` = your Google AI Studio key
-   Add both to Production, Preview and Development.
-4. Click **Deploy**.
-5. When the build finishes, confirm the commit hash shown in the Deployments
-   panel matches your latest commit before judging the result. The panel can
-   show a stale build.
-
-If a key is added after the first deploy, redeploy from the Deployments tab
-(three dots → Redeploy). Environment variables are only read at build time.
+The app has also been rebranded to NEVES ONE.
 
 ---
 
-## Using it
+## The engine dropdown
 
-1. Upload the **garment** reference: flat lay or ghost mannequin, shot square on.
-2. Upload a **pattern close-up**: crop tight on the repeat, in focus, filling the
-   frame. Do not skip this for anything printed or checked.
-3. Set **pattern lock** to strict for prints and checks, forensic for fine
-   repeats and lettering.
-4. Pick the model preset and the frame ratio.
-5. Click **Pattern test** first. Check the print at 100 percent before spending a
-   full set.
-6. When the print holds, click **Generate** for the full run.
+| Choose this | When |
+| --- | --- |
+| **GPT Image 2.5 Sunburst** | Final client work. Best print, logo and product accuracy. Slowest, roughly up to two minutes per image. |
+| **GPT Image 2.5 Flare** | Same quality jump, about twice as fast. Good for drafts and volume. |
+| **GPT Image 2** | What you have been using. Still here. Switch back to this if anything goes wrong. |
+| GPT Image 1.5 / 1 / 1 Mini | Older engines, untouched. |
+| **Gemini Flash Image** | Google. Fast and cheap. Needs `GEMINI_API_KEY`. |
+| **Seedream 4.5** | ByteDance, via fal. Needs `FAL_KEY` and at least one reference image. |
 
-To compare engines, change the engine dropdown and run the pattern test again
-with the same references. Nothing else changes, so the two results are directly
-comparable.
+Gemini and Seedream set their own quality, background and file format, so those
+three controls disappear when you select them. Aspect ratio, your references and
+your styling notes all still apply.
 
----
-
-## Tuning
-
-All in `app/page.js`, at the top of the file:
-
-| Constant | Default | What it does |
-| --- | --- | --- |
-| `DESAT` | `0.1` | HSL saturation reduction on the display copy |
-| `SKIN_TEXTURE` | `0.55` | Grain strength on skin midtones |
-| `REF_MAX_DIM` | `1400` | Longest edge of an uploaded reference |
-| `PATTERN_MAX_DIM` | `1600` | Longest edge of a pattern close-up |
-| `ANCHOR_MAX_DIM` | `900` | Longest edge of the anchor when re-sent |
-| `PAYLOAD_BUDGET` | `3400000` | Request ceiling, under Vercel's 4.5 MB limit |
-
-Prompt rules live in `lib/poses.js`. Engine routes and model IDs live in
-`lib/engines.js` — if a provider renames a model, that is the only file to edit.
+Switching engine also updates the Quality dropdown automatically. Sunburst adds
+**Maximum** and **Extra high**, which the older engines do not have. Pick an
+engine first, then quality.
 
 ---
 
-## Notes
+## Kidswear
 
-- No brand name is written into any prompt. Brand marks are transferred from the
-  reference image only. Emblems keep the orientation shown in the reference and
-  are never mirrored.
-- Vercel functions time out at 60 seconds. Nano Banana Pro is the slowest route;
-  if it times out, drop the reference size or use Nano Banana 2.
-- Model IDs current as of July 2026: `fal-ai/bytedance/seedream/v4.5/edit`,
-  `gemini-3.1-flash-image-preview`, `gemini-3-pro-image-preview`,
-  `gemini-2.5-flash-image`.
+Pick **Kids** in the Category tabs at the top of the panel. The app switches to
+garment-only mode. No child is generated, and no model picker appears.
 
+**Age band** is the important control. It sets the true garment scale, which is
+what stops a size 4 tee rendering as a shrunken adult tee. Body length, sleeve
+length, shoulder width, neck opening, armhole depth, hem position, buttons,
+zips and prints all scale to the band you choose:
+
+| Band | Height |
+| --- | --- |
+| 2–3 years (toddler) | 88–98 cm |
+| 4–5 years | 100–112 cm |
+| 6–7 years | 115–122 cm |
+| 8–9 years | 126–135 cm |
+| 10–12 years (tween) | 138–152 cm |
+
+**Presentation** offers three ways to shoot it:
+
+- **Ghost mannequin** — the garment holds a natural worn shape with nobody in
+  it, neck opening hollow, inside back collar visible. This is what most kids'
+  catalogues actually run.
+- **Flat lay** — laid flat, shot from directly overhead. Best for prints and sets.
+- **Hanging** — on a child-size wooden hanger. Best for outerwear and drape.
+
+Each gives you five views. If a reference photo has a child wearing the garment,
+the prompt instructs the engine to remove the person entirely and rebuild the
+parts of the garment they were covering.
+
+## Other new switches (all off by default)
+
+**Strict product fidelity** — tells the engine which uploaded image is the
+product, which is the face, which is the pose, and which is just styling mood.
+Then it adds a long list of "do not change the print, the logo, the seams, the
+colour" rules. Worth turning on for catalogue work. Costs nothing extra.
+
+**Reference detail** — Standard sends your reference photos at 1024px, which is
+what the app has always done. High sends them at 1536px, so more of the real
+print and fabric texture reaches the engine. Turn this on if patterns are coming
+back wrong.
+
+**Output format** — PNG is the default and best for masters. WebP or JPEG give
+you smaller files for delivery.
+
+**Diagnostics line** under each finished image — shows which engine made it, at
+what quality, and how long it took. Click it to expand.
+
+---
+
+## Honest limitations
+
+- These are generated images, not composites of your original photos.
+- Sunburst holds prints, logos and product shapes much better than GPT Image 2,
+  but no AI engine copies every motif or brand mark perfectly, and two runs of
+  the same product can differ.
+- Check the print repeat, any text or logo, the colour, the skin tone and the
+  hands on every frame before it goes to a client.
+- If a garment or label has to be pixel-perfect, shoot the real product and
+  composite it. This app does not do that.
+- There is no silent swapping. If Sunburst is unavailable the app tells you and
+  stops. It will never quietly render on a weaker engine behind your back.
 
 ---
 
 ## Environment variables
 
-Set these in Vercel under Settings → Environment Variables, then redeploy.
-You only need the key for the engines you actually intend to use.
-
-| Variable | Needed for |
-| --- | --- |
-| `OPENAI_API_KEY` | GPT Image 2.5 Sunburst and Flare (default engine) |
-| `FAL_KEY` | Seedream 4.5 and 4.0 |
-| `GEMINI_API_KEY` | Nano Banana family |
+| Variable | Needed? | What it does |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | Yes | Your existing key. Lives on the server, never reaches the browser. |
+| `GEMINI_API_KEY` | Only for the Gemini engine | Free from aistudio.google.com/apikey. |
+| `FAL_KEY` | Only for the Seedream engine | From fal.ai. |
+| `NEVES_ADMIN_TOKEN` | Optional | Switches on the `/api/diagnostics` page that checks whether your OpenAI account can actually use Sunburst. Without it that page returns 404. |
+| `OPENAI_IMAGE_MODEL_SNAPSHOT` | Optional | Locks a 2.5 engine to a fixed dated version so results stay repeatable. Use `gpt-image-2.5-sunburst-2026-09-08` or `gpt-image-2.5-flare-2026-09-08`. |
+| `OPENAI_BASE_URL` | No | Testing only. Leave it unset. |
 
 ---
 
-## Colourway override
+## Checking your OpenAI account can use Sunburst
 
-Off by default. When switched on, the garment is re-dyed to a target hex while
-pattern geometry, emblem colours and hardware stay exactly as referenced. The
-hex is passed to the engine alongside a plain-language name for the same colour,
-because a hex on its own gets approximated and a named colour lands much closer.
+### The quick way: one command
 
-Scope options: whole garment, body only, trims only, or pattern background only.
+```
+npm install
+npm run access-test
+```
 
-## Pairing slots
+It asks OpenAI for a single cheap test image using `gpt-image-2.5-sunburst` and
+nothing else. It reads your key from `.env.local` or your shell, never prints it,
+never tries a different model, and changes nothing in the app.
 
-Optional **Trousers / bottoms** and **Footwear** slots. Each accepts up to five
-views of the same item, composited into a single contact sheet so the whole set
-fits inside one reference slot. Paired items are treated as real products to
-reproduce, not as styling to invent, and they stay identical across the set.
+If it works you get `ACCESS CONFIRMED` and a file called
+`gpt-image-2.5-sunburst-access-test.png` in the project folder.
+
+If it does not, you get `ACCESS NOT CONFIRMED` plus the HTTP status, the error
+type and code, the full message from OpenAI, and a plain-English line telling you
+whether the problem is your key, organisation verification, project permissions,
+billing, or just a rate limit.
+
+### The other way: from the deployed app
+
+OpenAI often requires Organization Verification before an account can use GPT
+Image models. Better to find out now than mid-job.
+
+Set `NEVES_ADMIN_TOKEN` to any long random string, then visit:
+
+```
+https://your-app.vercel.app/api/diagnostics?token=YOUR_TOKEN&smoke=1
+```
+
+That runs one real, cheap test image and tells you plainly whether it worked.
+It never runs on its own.
+
+---
+
+## Rolling it out sensibly
+
+Don't switch everything to Sunburst at once.
+
+1. Find your worst GPT Image 2 results — striped or monogrammed pieces, anything
+   with a logo, deep skin tones, close face crops.
+2. Re-run those exact jobs with only the engine changed to Sunburst.
+3. Compare like for like. Then try turning Strict product fidelity on.
+4. Run the hard ones a few times. You're checking consistency, not luck.
+
+Rolling back is one dropdown.
+
+---
+
+## Running it locally
+
+```
+npm install
+npm run dev
+```
+
+```
+npm test        # 55 checks, no extra packages needed
+npm run build
+```
+
+---
+
+## Where things live
+
+```
+app/page.js                    NEVES ONE v2
+app/classic/page.js            Five Poses v1, untouched
+app/api/generate/route.js      The OpenAI route (all GPT Image engines)
+app/api/generate-classic/route.js    v1's own route, untouched
+app/api/generate-gemini/route.js     The Gemini route
+app/api/generate-seedream/route.js   The Seedream route
+app/api/diagnostics/route.js   Locked admin check
+lib/engines.js                 Every model name and rule, in one file
+lib/poses.js                   The pose engine and prompts
+lib/meta.js                    The per-image info shown under each result
+```
+
+No model name is written anywhere except `lib/engines.js`. Each engine declares
+which route it posts to, so adding another provider means one entry in that file
+plus its route.

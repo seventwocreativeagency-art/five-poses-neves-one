@@ -1,16 +1,19 @@
 {
-  "name": "five-poses-v2",
+  "name": "neves-one-five-poses",
   "version": "2.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "test": "node tests/run.mjs",
+    "access-test": "node scripts/access-test.mjs"
   },
   "dependencies": {
-    "next": "14.2.5",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "@fal-ai/client": "^1.10.1",
+    "@google/genai": "^2.21.0",
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }

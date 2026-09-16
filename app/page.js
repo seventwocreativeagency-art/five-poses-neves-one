@@ -1,1185 +1,1272 @@
-'use client';
+"use client";
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import "./globals.css";
+
+import { useState, useEffect } from "react";
 import {
-  ENGINE_LIST,
-  DEFAULT_ENGINE,
-  routeFor,
-  ASPECTS,
-  RESOLUTIONS,
-  DEFAULT_RESOLUTION,
-  resolutionCapLabel,
-} from '../lib/engines';
-import { normaliseHex, colourPhrase, describeHex, readableInk } from '../lib/colour';
-import {
-  GENDERS,
+  MODELS,
   MODEL_PRESETS,
-  UPLOAD_KEY,
-  presetsFor,
-  presetByKey,
-} from '../lib/models';
-import {
-  POSES,
+  QUALITIES,
+  QUALITY_LABELS,
+  BACKGROUNDS,
+  ASPECT_RATIOS,
+  REF_GROUPS,
+  GARMENT_TYPES,
+  POSE_SETS,
+  POSE_ORDER,
+  FOCUS,
+  pickPose,
   buildPrompt,
+  buildReframePrompt,
   buildRefinePrompt,
-  FIDELITY_RULES,
-} from '../lib/poses';
-import { qcChecklist, DEFECT_GROUPS } from '../lib/qa';
+  buildRoleLines,
+  KIDS_AGE_BANDS,
+  KIDS_PRESENTATIONS,
+  KIDS_POSE_SETS,
+  buildKidsPrompt,
+  buildKidsRefinePrompt,
+} from "../lib/poses";
+import {
+  ENGINES,
+  ENGINE_GROUPS,
+  DEFAULT_ENGINE,
+  getEngine,
+  isNewGeneration,
+  routeFor,
+  isOpenAI,
+} from "../lib/engines";
+import { decodeMeta } from "../lib/meta";
 
-// ---------------------------------------------------------------------------
-// Tunable constants
-// ---------------------------------------------------------------------------
+const G = Object.fromEntries(REF_GROUPS.map((g) => [g.id, g]));
 
-const DESAT = 0.1;            // 10% HSL saturation reduction, display copy only
-// Grain strength on skin midtones, display copy only. The client's defect
-// register lists artificial texture buildup as a rejection reason, and this
-// pass is capable of causing exactly that, so it is operator-controlled and
-// defaults low rather than being baked in.
-const SKIN_TEXTURE_LEVELS = {
-  off: { label: 'Off — engine texture only', value: 0 },
-  light: { label: 'Light', value: 0.3 },
-  standard: { label: 'Standard', value: 0.55 },
-};
-const DEFAULT_SKIN_TEXTURE = 'light';
-const REF_MAX_DIM = 1400;     // garment references
-const PATTERN_MAX_DIM = 2048; // pattern close-ups keep every motif edge
-const MODEL_MAX_DIM = 900;    // model head references
-const ANCHOR_MAX_DIM = 900;   // anchor frame when re-sent
-const SHEET_MAX_DIM = 2048;   // contact sheet of extra garment / footwear views
-const PAYLOAD_BUDGET = 3_400_000; // stay under Vercel's 4.5 MB request limit
-
-// ---------------------------------------------------------------------------
-// Image helpers
-// ---------------------------------------------------------------------------
-
-function loadImage(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('That image could not be read.'));
-    img.src = src;
-  });
-}
-
-function fileToDataUrl(file) {
+function downscale(file, maxDim = 1024) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('That file could not be read.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const s = maxDim / Math.max(width, height);
+          width = Math.round(width * s);
+          height = Math.round(height * s);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
     reader.readAsDataURL(file);
   });
 }
 
-async function resizeDataUrl(dataUrl, maxDim, quality = 0.9) {
-  const img = await loadImage(dataUrl);
-  const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-  const w = Math.max(1, Math.round(img.width * scale));
-  const h = Math.max(1, Math.round(img.height * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, 0, 0, w, h);
-  return canvas.toDataURL('image/jpeg', quality);
-}
-
-async function urlToDataUrl(url, maxDim = MODEL_MAX_DIM) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Could not load ${url}`);
-  const blob = await res.blob();
-  const raw = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Read failed'));
-    reader.readAsDataURL(blob);
+// Re-encode a dataURL into a smaller box / quality. Used to keep the whole
+// request under Vercel's hard 4.5 MB serverless body limit.
+function shrinkDataUrl(dataUrl, maxDim, quality) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      const m = Math.max(width, height);
+      if (m > maxDim) {
+        const s = maxDim / m;
+        width = Math.round(width * s);
+        height = Math.round(height * s);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
   });
-  return resizeDataUrl(raw, maxDim, 0.92);
 }
 
-// Both engines cap at six reference images per call, so a large reference set
-// cannot be sent one image per slot. Compositing them into a single high
-// resolution contact sheet gets every view in front of the engine using one
-// slot, and cuts the upload size at the same time.
-async function buildContactSheet(dataUrls, maxDim = SHEET_MAX_DIM) {
-  if (!dataUrls.length) return null;
-  if (dataUrls.length === 1) return dataUrls[0];
-
-  const imgs = await Promise.all(dataUrls.map(loadImage));
-  const cols = Math.ceil(Math.sqrt(imgs.length));
-  const rows = Math.ceil(imgs.length / cols);
-  const cell = Math.floor(maxDim / Math.max(cols, rows));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = cols * cell;
-  canvas.height = rows * cell;
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingQuality = 'high';
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  imgs.forEach((img, i) => {
-    const c = i % cols;
-    const r = Math.floor(i / cols);
-    const scale = Math.min(cell / img.width, cell / img.height);
-    const w = Math.round(img.width * scale);
-    const h = Math.round(img.height * scale);
-    ctx.drawImage(img, c * cell + (cell - w) / 2, r * cell + (cell - h) / 2, w, h);
-  });
-
-  return canvas.toDataURL('image/jpeg', 0.92);
+function approxBytes(dataUrls) {
+  return dataUrls.reduce((n, d) => n + (d ? d.length : 0), 0) * 0.75;
 }
 
-// Progressively re-encode until the whole request fits inside Vercel's limit.
-async function fitPayload(images) {
+// Shrink the whole image set step-by-step until it fits comfortably under the
+// 4.5 MB serverless request-body limit. No-op when the set is already small.
+async function fitPayload(images, capBytes = 4_000_000) {
+  let imgs = images;
   const steps = [
-    { dim: REF_MAX_DIM, q: 0.9 },
-    { dim: 1152, q: 0.88 },
-    { dim: 1024, q: 0.85 },
-    { dim: 896, q: 0.82 },
-    { dim: 768, q: 0.8 },
-    { dim: 640, q: 0.75 },
+    [1024, 0.82],
+    [896, 0.8],
+    [768, 0.76],
+    [640, 0.72],
   ];
-  let current = images;
-  for (const step of steps) {
-    const total = current.reduce((sum, u) => sum + u.length, 0);
-    if (total < PAYLOAD_BUDGET) return current;
-    current = await Promise.all(images.map((u) => resizeDataUrl(u, step.dim, step.q)));
+  for (const [dim, q] of steps) {
+    if (approxBytes(imgs) <= capBytes) break;
+    imgs = await Promise.all(imgs.map((d) => shrinkDataUrl(d, dim, q)));
   }
-  return current;
+  return imgs;
 }
 
-// --- colour maths -----------------------------------------------------------
-
-function rgbToHsl(r, g, b) {
-  r /= 255;
-  g /= 255;
-  b /= 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  if (max === min) return [0, 0, l];
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  let h;
-  if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
-  else if (max === g) h = (b - r) / d + 2;
-  else h = (r - g) / d + 4;
-  return [h / 6, s, l];
+function sizeFor(model, ratio) {
+  if (getEngine(model).customSize) return `${ratio.w}x${ratio.h}`;
+  if (ratio.w === ratio.h) return "1024x1024";
+  return ratio.w < ratio.h ? "1024x1536" : "1536x1024";
 }
 
-function hue2rgb(p, q, t) {
-  if (t < 0) t += 1;
-  if (t > 1) t -= 1;
-  if (t < 1 / 6) return p + (q - p) * 6 * t;
-  if (t < 1 / 2) return q;
-  if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-  return p;
-}
+// Reference detail. "standard" is the original 1024px behaviour and stays the
+// default. "high" re-derives references from the untouched original file at
+// 1536px, so less real product detail is thrown away before it reaches the API.
+export const DETAIL_LEVELS = [
+  { id: "standard", label: "Standard — 1024px references", dim: 1024 },
+  { id: "high", label: "High — 1536px references (more print detail)", dim: 1536 },
+];
 
-function hslToRgb(h, s, l) {
-  if (s === 0) {
-    const v = l * 255;
-    return [v, v, v];
-  }
-  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-  const p = 2 * l - q;
-  return [hue2rgb(p, q, h + 1 / 3) * 255, hue2rgb(p, q, h) * 255, hue2rgb(p, q, h - 1 / 3) * 255];
-}
-
-function clamp255(v) {
-  return v < 0 ? 0 : v > 255 ? 255 : v;
-}
-
-// Monochromatic zero-mean grain, luminance-masked so the white backdrop stays
-// clean and only skin midtones receive texture.
-function addSkinTexture(data, amount) {
-  const strength = amount * 7;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    if (!(r > g && g >= b)) continue;
-    if (lum <= 36 || lum >= 236) continue;
-    const rise = Math.min(1, (lum - 36) / 40);
-    const fall = Math.min(1, (236 - lum) / 40);
-    const warmth = Math.min(1, (r - b) / 40);
-    const mask = rise * fall * warmth;
-    if (mask <= 0) continue;
-    const n = (Math.random() * 2 - 1) * strength * mask;
-    data[i] = clamp255(r + n);
-    data[i + 1] = clamp255(g + n);
-    data[i + 2] = clamp255(b + n);
-  }
-}
-
-// Applied to the display and download copy only. The raw frame is never
-// touched: it stays the identity anchor and the base for any refine pass.
-async function postProcess(dataUrl, skinTexture = 0) {
-  try {
-    const img = await loadImage(dataUrl);
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const d = imageData.data;
-
-    if (DESAT > 0) {
-      const factor = 1 - DESAT;
-      for (let i = 0; i < d.length; i += 4) {
-        const [h, s, l] = rgbToHsl(d[i], d[i + 1], d[i + 2]);
-        if (s === 0) continue;
-        const [r, g, b] = hslToRgb(h, s * factor, l);
-        d[i] = clamp255(r);
-        d[i + 1] = clamp255(g);
-        d[i + 2] = clamp255(b);
+// Re-derive uploaded references at the requested size, falling back to the
+// stored 1024px version whenever the original file is no longer around.
+async function refUrls(list, cap, maxDim) {
+  const picked = list.slice(0, cap);
+  if (maxDim <= 1024) return picked.map((r) => r.dataUrl);
+  const out = [];
+  for (const r of picked) {
+    if (r.file) {
+      try {
+        out.push(await downscale(r.file, maxDim));
+        continue;
+      } catch {
+        /* fall through */
       }
     }
-    if (skinTexture > 0) addSkinTexture(d, skinTexture);
-
-    ctx.putImageData(imageData, 0, 0);
-    return canvas.toDataURL('image/png');
-  } catch (e) {
-    return dataUrl;
+    out.push(r.dataUrl);
   }
+  return out;
 }
 
-function downloadDataUrl(dataUrl, filename) {
-  const a = document.createElement('a');
-  a.href = dataUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
-const stamp = () =>
-  new Date().toLocaleTimeString('en-GB', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-
-// ---------------------------------------------------------------------------
-// Reference slot
-// ---------------------------------------------------------------------------
-
-function RefSlot({ title, role, note, limit, items, onAdd, onRemove }) {
-  const inputRef = useRef(null);
-
-  async function handleFiles(event) {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) return;
-    const maxDim = role === 'pattern' || role === 'logo' ? PATTERN_MAX_DIM : REF_MAX_DIM;
-    const next = [];
-    for (const file of files.slice(0, limit - items.length)) {
-      const raw = await fileToDataUrl(file);
-      next.push(await resizeDataUrl(raw, maxDim, 0.92));
+// Baked-in model photos at an arbitrary size, cached across renders.
+const presetCache = new Map();
+async function presetUrls(presetKey, maxDim) {
+  const cacheKey = `${presetKey}@${maxDim}`;
+  if (presetCache.has(cacheKey)) return presetCache.get(cacheKey);
+  const m = MODEL_PRESETS.find((x) => x.key === presetKey);
+  if (!m) return [];
+  const files = m.files && m.files.length ? m.files : [m.file];
+  const out = [];
+  for (const fname of files) {
+    try {
+      const res = await fetch(`/models/${fname}`);
+      out.push(await downscale(await res.blob(), maxDim));
+    } catch {
+      /* skip */
     }
-    onAdd(next);
-    if (inputRef.current) inputRef.current.value = '';
   }
+  presetCache.set(cacheKey, out);
+  return out;
+}
 
+const SEND = { product: 5, secondary: 3, model: 4, modelWithAnchor: 2, shoes: 2, composition: 1 };
+// Lighter caps for the pose path (it also carries the pose photo), so the
+// request stays well under Vercel's 4.5 MB body limit.
+const SEND_POSE = { product: 4, secondary: 2, model: 3, shoes: 1, composition: 0 };
+// Reframe path: the anchor (the finished Full Front) leads and carries the whole
+// look, so we only add a few product refs + the face to reinforce fidelity.
+const SEND_REFRAME = { product: 3, model: 3 };
+
+function PersonIcon() {
   return (
-    <div className="slot">
-      <div className="slot-head">
-        <strong>{title}</strong>
-        <span>
-          {items.length}/{limit}
-        </span>
+    <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+      <circle cx="20" cy="13" r="6" fill="none" stroke="var(--muted)" strokeWidth="1.6" />
+      <path d="M9 33c0-7 5-11 11-11s11 4 11 11" fill="none" stroke="var(--brand)" strokeWidth="1.6" />
+    </svg>
+  );
+}
+
+function blobToDataURL(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(blob);
+  });
+}
+
+/* ---- generic reference upload group (product / shoes / look) ---- */
+function RefZone({ group, files, onAdd, onRemove }) {
+  const [drag, setDrag] = useState(false);
+  return (
+    <div className={`zone${group.primary ? " zone-primary" : ""}`}>
+      <div className="zone-label">
+        {group.title}
+        {group.optional ? <span className="zone-opt">optional</span> : <span className="zone-req">required</span>}
       </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        multiple={limit > 1}
-        onChange={handleFiles}
-        disabled={items.length >= limit}
-      />
-      {note ? <div className="hint">{note}</div> : null}
-      {items.length ? (
-        <div className="thumbs">
-          {items.map((src, i) => (
-            <div className="thumb" key={`${role}-${i}`}>
-              <img src={src} alt={`${title} ${i + 1}`} />
-              <button type="button" onClick={() => onRemove(i)} aria-label="Remove image">
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
+      <div
+        className={`dropzone compact${group.primary ? " primary" : ""}${drag ? " drag" : ""}`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDrag(true);
+        }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDrag(false);
+          onAdd(e.dataTransfer.files);
+        }}
+      >
+        <div className="dropzone-sub">{group.hint}</div>
+        <label>
+          Choose files
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              onAdd(e.target.files);
+              e.target.value = "";
+            }}
+          />
+        </label>
+        {files.length > 0 && (
+          <div className="thumbs">
+            {files.map((r, i) => (
+              <div className="thumb" key={i}>
+                <img src={r.dataUrl} alt={r.name} />
+                <button className="thumb-x" onClick={() => onRemove(i)} title="Remove">
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Model picker
-// ---------------------------------------------------------------------------
-
-function ModelPicker({ gender, setGender, selected, setSelected, custom, setCustom }) {
-  const presets = presetsFor(gender);
-  const inputRef = useRef(null);
-
-  useEffect(() => {
-    if (selected !== UPLOAD_KEY && !presets.some((p) => p.key === selected)) {
-      setSelected(presets[0]?.key || UPLOAD_KEY);
-    }
-  }, [gender]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function handleUpload(event) {
-    const files = Array.from(event.target.files || []).slice(0, 4);
-    if (!files.length) return;
-    const next = [];
-    for (const file of files) {
-      const raw = await fileToDataUrl(file);
-      next.push(await resizeDataUrl(raw, MODEL_MAX_DIM, 0.92));
-    }
-    setCustom(next);
-    setSelected(UPLOAD_KEY);
-    if (inputRef.current) inputRef.current.value = '';
-  }
-
+/* ---- model picker: baked-in models (filtered by gender) + upload-your-own ---- */
+function ModelPicker({ presets, selected, onSelect, uploadFiles, onAddUpload, onRemoveUpload }) {
+  const current = presets.find((m) => m.key === selected);
   return (
-    <div>
-      <div className="gender-toggle">
-        {GENDERS.map((g) => (
-          <button
-            key={g.id}
-            type="button"
-            className={`seg-btn${gender === g.id ? ' on' : ''}`}
-            onClick={() => setGender(g.id)}
-          >
-            {g.label}
-          </button>
-        ))}
+    <div className="zone">
+      <div className="zone-label">
+        Model
+        <span className="zone-req">required</span>
       </div>
-
       <div className="model-grid">
         {presets.map((m) => (
           <button
             key={m.key}
-            type="button"
-            className={`model-card${selected === m.key ? ' on' : ''}`}
-            onClick={() => setSelected(m.key)}
-            title={m.name}
+            className={`model-tile${selected === m.key ? " on" : ""}`}
+            onClick={() => onSelect(m.key)}
+            title={`${m.name} — ${m.hair}`}
           >
-            <span className="model-thumb">
-              <img src={`/models/${m.file}`} alt={m.name} loading="lazy" />
-            </span>
+            <img src={`/models/${m.file}`} alt={m.name} />
             <span className="model-name">{m.name}</span>
           </button>
         ))}
-
         <button
-          type="button"
-          className={`model-card upload${selected === UPLOAD_KEY ? ' on' : ''}`}
-          onClick={() => inputRef.current?.click()}
+          className={`model-tile upload${selected === "upload" ? " on" : ""}`}
+          onClick={() => onSelect("upload")}
         >
-          <span className="model-thumb">
-            {custom.length ? <img src={custom[0]} alt="Your model" /> : <span className="plus">+</span>}
-          </span>
-          <span className="model-name">{custom.length ? 'Yours' : 'Upload'}</span>
+          <span className="model-plus">+</span>
+          <span className="model-name">Upload</span>
         </button>
       </div>
 
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        onChange={handleUpload}
-        style={{ display: 'none' }}
-      />
-      <div className="hint">
-        Each preset ships four reference angles. The shot you ask for is sent the angle that matches it.
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
-
-export default function Page() {
-  const [engine, setEngine] = useState(DEFAULT_ENGINE);
-  const [aspect, setAspect] = useState('3:4');
-  const [resolution, setResolution] = useState(DEFAULT_RESOLUTION);
-  const [notes, setNotes] = useState('');
-  const [skinTexture, setSkinTexture] = useState(DEFAULT_SKIN_TEXTURE);
-  const [qcDone, setQcDone] = useState({});
-
-  const [gender, setGender] = useState('men');
-  const [selectedModel, setSelectedModel] = useState('andre');
-  const [customModel, setCustomModel] = useState([]);
-
-  const [garment, setGarment] = useState([]);
-  const [pattern, setPattern] = useState([]);
-  const [logo, setLogo] = useState([]);
-  const [footwear, setFootwear] = useState([]);
-  const [bottoms, setBottoms] = useState([]);
-
-  const [recolour, setRecolour] = useState(false);
-  const [hex, setHex] = useState('#1B2A4A');
-  const [colourScope, setColourScope] = useState('the whole garment');
-
-  const [selected, setSelected] = useState(POSES.map((p) => p.id));
-  const [results, setResults] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [log, setLog] = useState([]);
-  const [refineText, setRefineText] = useState({});
-  const [poseText, setPoseText] = useState(() =>
-    Object.fromEntries(POSES.map((p) => [p.id, p.description]))
-  );
-
-  const cleanHex = useMemo(() => normaliseHex(hex), [hex]);
-  const colourSpec = useMemo(() => {
-    if (!recolour || !cleanHex) return null;
-    return { phrase: colourPhrase(cleanHex), scope: colourScope };
-  }, [recolour, cleanHex, colourScope]);
-
-  const pairingSpec = useMemo(
-    () => ({ hasBottoms: bottoms.length > 0, hasFootwear: footwear.length > 0 }),
-    [bottoms.length, footwear.length]
-  );
-
-  const route = useMemo(() => routeFor(engine), [engine]);
-  const preset = useMemo(() => presetByKey(selectedModel), [selectedModel]);
-  const isChild = preset?.gender === 'kids';
-  const anchorPose = useMemo(
-    () =>
-      POSES.find((p) => p.anchor && selected.includes(p.id)) ||
-      POSES.find((p) => selected.includes(p.id)),
-    [selected]
-  );
-
-  function note(line) {
-    setLog((prev) => [...prev.slice(-40), `${stamp()}  ${line}`]);
-  }
-
-  function togglePose(id) {
-    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  }
-
-  // Model reference images for a given pose: the preset's matching angle files,
-  // or the operator's own uploads when no preset is selected.
-  async function modelRefsFor(pose) {
-    if (!preset) return customModel.slice(0, 3);
-    const base = preset.file.replace(/\.jpg$/i, '');
-    const files = pose.angles.map((suffix) => `/models/${base}${suffix}.jpg`);
-    const out = [];
-    for (const f of files) {
-      try {
-        out.push(await urlToDataUrl(f));
-      } catch (e) {
-        // A missing angle file should not kill the shot.
-      }
-    }
-    return out;
-  }
-
-  const modelDescriptor = preset
-    ? preset.face
-    : 'The model is the exact person shown in the supplied model reference photographs. Match their face, complexion, hair and build precisely, and preserve their skin tone exactly as photographed with no lightening or brightening whatsoever.';
-
-  async function callEngine(prompt, images) {
-    const fitted = await fitPayload(images);
-    const res = await fetch('/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine, prompt, images: fitted, aspect, resolution }),
-    });
-    if (!res.ok) {
-      const data = await res
-        .json()
-        .catch(() => ({ error: `The engine returned ${res.status} with no readable message.` }));
-      throw new Error([data.error, data.detail].filter(Boolean).join(' — '));
-    }
-    // Success comes back as raw image bytes, not JSON. Base64 inside JSON
-    // overflowed the response limit at 2K and broke the parse.
-    const blob = await res.blob();
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('The generated image could not be read.'));
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  async function runSet(poseIds) {
-    setError('');
-    if (!garment.length) {
-      setError('Add at least one garment reference before generating.');
-      return;
-    }
-    if (!poseIds.length) {
-      setError('Select at least one shot.');
-      return;
-    }
-    if (!preset && !customModel.length) {
-      setError('Pick a model, or upload your own reference photographs.');
-      return;
-    }
-
-    setBusy(true);
-    setResults(
-      poseIds.map((id) => {
-        const pose = POSES.find((p) => p.id === id);
-        return { poseId: id, name: pose.name, status: 'queued', raw: null, display: null, error: null };
-      })
-    );
-
-    const update = (id, patch) =>
-      setResults((prev) => prev.map((r) => (r.poseId === id ? { ...r, ...patch } : r)));
-
-    // Anchor first: generated alone, then handed to every other shot as a
-    // master reference for identity, garment and print — but explicitly not
-    // for camera angle.
-    const ordered = [...poseIds].sort((a, b) => {
-      if (a === anchorPose?.id) return -1;
-      if (b === anchorPose?.id) return 1;
-      return 0;
-    });
-
-    let anchorImage = null;
-
-    for (const id of ordered) {
-      const pose = POSES.find((p) => p.id === id);
-      const isAnchor = anchorImage === null;
-      update(id, { status: isAnchor ? 'generating anchor' : 'generating' });
-      note(`${pose.name} — ${route.label}${isAnchor ? ' (anchor)' : ''}`);
-
-      const modelImages = await modelRefsFor(pose);
-
-      // Priority order. Everything the engine needs to hold identity and print
-      // must survive the cap, so budget is allocated deliberately rather than
-      // letting a trailing slice decide what gets dropped.
-      // Slot budget. Both engines cap at six references per call, so slots are
-      // filled by priority and the least load-bearing are the ones that miss
-      // out. Identity, the garment and the emblem are never what gets dropped.
-      const garmentSheet =
-        garment.length > 1 ? await buildContactSheet(garment.slice(1)) : null;
-      const logoImage = logo.length > 1 ? await buildContactSheet(logo) : logo[0] || null;
-      const footwearImage =
-        footwear.length > 1 ? await buildContactSheet(footwear) : footwear[0] || null;
-      const bottomsImage =
-        bottoms.length > 1 ? await buildContactSheet(bottoms) : bottoms[0] || null;
-
-      const candidates = [
-        { role: 'garment', src: garment[0], priority: 1 },
-        { role: 'modelAngle', src: modelImages[0], priority: 2 },
-        { role: 'anchor', src: !isAnchor ? anchorImage : null, priority: 3 },
-        { role: 'logo', src: logoImage, priority: 4 },
-        { role: 'pattern', src: pattern[0], priority: 5 },
-        { role: 'garmentSheet', src: garmentSheet, priority: 6 },
-        // Bottoms sit above footwear because they occupy far more of the frame,
-        // so a wrong pair of trousers is the more expensive miss.
-        {
-          role: bottoms.length > 1 ? 'bottomsSheet' : 'bottoms',
-          src: bottomsImage,
-          priority: 7,
-        },
-        {
-          role: footwear.length > 1 ? 'footwearSheet' : 'footwear',
-          src: footwearImage,
-          priority: 8,
-        },
-        { role: 'model', src: modelImages[1], priority: 9 },
-      ].filter((c) => !!c.src);
-
-      // Presentation order for the reference map, independent of priority.
-      const displayOrder = [
-        'garment',
-        'garmentSheet',
-        'pattern',
-        'logo',
-        'modelAngle',
-        'model',
-        'bottoms',
-        'bottomsSheet',
-        'footwear',
-        'footwearSheet',
-        'anchor',
-      ];
-
-      const chosen = [...candidates]
-        .sort((a, b) => a.priority - b.priority)
-        .slice(0, route.maxRefs)
-        .sort((a, b) => displayOrder.indexOf(a.role) - displayOrder.indexOf(b.role));
-
-      const trimmed = chosen.map((c) => ({ role: c.role }));
-      const trimmedImages = chosen.map((c) => c.src);
-
-      const prompt = buildPrompt({
-        engine,
-        pose,
-        refs: trimmed,
-        modelDescriptor,
-        isChild,
-        hasAnchor: !isAnchor && !!anchorImage,
-        notes,
-        colour: colourSpec,
-        pairing: pairingSpec,
-        overrideDescription:
-          poseText[pose.id] !== pose.description ? poseText[pose.id] : '',
-      });
-
-      try {
-        const raw = await callEngine(prompt, trimmedImages);
-        const display = await postProcess(raw, SKIN_TEXTURE_LEVELS[skinTexture].value);
-        update(id, { status: 'done', raw, display, error: null });
-        note(`${pose.name} — done`);
-        if (isAnchor) anchorImage = await resizeDataUrl(raw, ANCHOR_MAX_DIM, 0.88);
-      } catch (err) {
-        update(id, { status: 'failed', error: String(err.message || err) });
-        note(`${pose.name} — failed`);
-        if (isAnchor) {
-          setError('The anchor frame failed, so the rest of the set was not attempted.');
-          break;
-        }
-      }
-    }
-
-    setBusy(false);
-  }
-
-  async function runRefine(poseId) {
-    const target = results.find((r) => r.poseId === poseId);
-    const instruction = (refineText[poseId] || '').trim();
-    if (!target?.raw || !instruction) return;
-
-    setBusy(true);
-    setError('');
-
-    const refs = [{ role: 'anchor' }];
-    const images = [target.raw];
-    garment.forEach((src) => {
-      refs.push({ role: 'garment' });
-      images.push(src);
-    });
-    pattern.forEach((src) => {
-      refs.push({ role: 'pattern' });
-      images.push(src);
-    });
-    logo.slice(0, 1).forEach((src) => {
-      refs.push({ role: 'logo' });
-      images.push(src);
-    });
-
-    setResults((prev) => prev.map((r) => (r.poseId === poseId ? { ...r, status: 'refining' } : r)));
-    note(`${target.name} — refine: ${instruction.slice(0, 60)}`);
-
-    try {
-      const prompt = buildRefinePrompt({
-        engine,
-        refs: refs.slice(0, route.maxRefs),
-        instruction,
-        isChild,
-        colour: colourSpec,
-      });
-      const raw = await callEngine(prompt, images.slice(0, route.maxRefs));
-      const display = await postProcess(raw, SKIN_TEXTURE_LEVELS[skinTexture].value);
-      setResults((prev) =>
-        prev.map((r) =>
-          r.poseId === poseId ? { ...r, raw, display, status: 'done', error: null } : r
-        )
-      );
-      setRefineText((prev) => ({ ...prev, [poseId]: '' }));
-      note(`${target.name} — refined`);
-    } catch (err) {
-      setResults((prev) =>
-        prev.map((r) =>
-          r.poseId === poseId ? { ...r, status: 'failed', error: String(err.message || err) } : r
-        )
-      );
-      note(`${target.name} — refine failed`);
-    }
-
-    setBusy(false);
-  }
-
-  function downloadAll() {
-    results
-      .filter((r) => r.display)
-      .forEach((r, i) => {
-        setTimeout(() => downloadDataUrl(r.display, `${r.poseId}.png`), i * 350);
-      });
-  }
-
-  const doneCount = results.filter((r) => r.status === 'done').length;
-  const qcItems = useMemo(() => qcChecklist(), []);
-  const qcPassed = qcItems.filter((q) => qcDone[q.id]).length;
-
-  return (
-    <div className="shell">
-      <header className="masthead">
-        <div>
-          <h1>Five Poses v2</h1>
-          <div className="sub">
-            Pattern-locked · Angle-locked · GPT Image 2.5 + Seedream + Nano Banana
-          </div>
+      {presets.length === 0 && selected === "upload" && (
+        <div className="model-note">
+          No saved faces here yet — upload your model's photos below. (Send the team a few male model
+          shots and we'll add tap-to-pick faces here too.)
         </div>
-        <div className="sub">
-          {route.label} · {route.vendor}
-        </div>
-      </header>
-
-      {error ? <div className="banner">{error}</div> : null}
-
-      <div className="columns">
-        {/* ---------------- controls ---------------- */}
-        <div>
-          <div className="panel">
-            <h2>Model</h2>
-            <ModelPicker
-              gender={gender}
-              setGender={setGender}
-              selected={selectedModel}
-              setSelected={setSelectedModel}
-              custom={customModel}
-              setCustom={setCustomModel}
+      )}
+      {selected === "upload" ? (
+        <div className="dropzone compact" style={{ marginTop: 10 }}>
+          <div className="dropzone-sub">Clear, evenly-lit, front-facing face shots of your model.</div>
+          <label>
+            Choose files
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e) => {
+                onAddUpload(e.target.files);
+                e.target.value = "";
+              }}
             />
-          </div>
-
-          <div className="panel">
-            <h2>References</h2>
-            <div className="hint" style={{ marginTop: -6, marginBottom: 12 }}>
-              Every reference must be a photograph of the real garment. Feeding a generated frame
-              back in re-teaches the engine the distortion you are trying to remove.
-            </div>
-            <RefSlot
-              title="Garment"
-              role="garment"
-              limit={6}
-              items={garment}
-              note="Up to 6 views of the same garment: front, back, side, collar, cuff, hem. The first is sent at full resolution; the rest are composited into one contact sheet."
-              onAdd={(next) => setGarment((prev) => [...prev, ...next].slice(0, 6))}
-              onRemove={(i) => setGarment((prev) => prev.filter((_, x) => x !== i))}
-            />
-            <RefSlot
-              title="Pattern close-up"
-              role="pattern"
-              limit={2}
-              items={pattern}
-              note="A macro photograph of the real fabric, cropped tight on the repeat at full camera resolution."
-              onAdd={(next) => setPattern((prev) => [...prev, ...next].slice(0, 2))}
-              onRemove={(i) => setPattern((prev) => prev.filter((_, x) => x !== i))}
-            />
-            <RefSlot
-              title="Logo / emblem"
-              role="logo"
-              limit={2}
-              items={logo}
-              note="A macro of the brand mark on this garment, shot square on and sharp. Highest-value reference you can give — logo distortion is the client's most-cited defect."
-              onAdd={(next) => setLogo((prev) => [...prev, ...next].slice(0, 2))}
-              onRemove={(i) => setLogo((prev) => prev.filter((_, x) => x !== i))}
-            />
-            <RefSlot
-              title="Trousers / bottoms"
-              role="bottoms"
-              limit={5}
-              items={bottoms}
-              note="Optional. The lower garment to pair with this piece: trousers, jeans, shorts or a skirt. Up to 5 views of the same item, composited into one contact sheet."
-              onAdd={(next) => setBottoms((prev) => [...prev, ...next].slice(0, 5))}
-              onRemove={(i) => setBottoms((prev) => prev.filter((_, x) => x !== i))}
-            />
-            <RefSlot
-              title="Footwear"
-              role="footwear"
-              limit={5}
-              items={footwear}
-              note="Optional. Up to 5 views of the same pair, composited into one contact sheet."
-              onAdd={(next) => setFootwear((prev) => [...prev, ...next].slice(0, 5))}
-              onRemove={(i) => setFootwear((prev) => prev.filter((_, x) => x !== i))}
-            />
-          </div>
-
-          <div className="panel">
-            <h2>Colourway</h2>
-            <div className="pose-row" style={{ marginBottom: 10 }}>
-              <input
-                id="recolour"
-                type="checkbox"
-                checked={recolour}
-                onChange={(e) => setRecolour(e.target.checked)}
-              />
-              <label htmlFor="recolour" className="nm">
-                Change the garment colour
-              </label>
-            </div>
-
-            {recolour ? (
-              <>
-                <div className="field">
-                  <label className="lbl" htmlFor="hex">
-                    Target colour
-                  </label>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <input
-                      type="color"
-                      aria-label="Colour picker"
-                      value={cleanHex || '#000000'}
-                      onChange={(e) => setHex(e.target.value.toUpperCase())}
-                      style={{
-                        width: 46,
-                        height: 38,
-                        padding: 2,
-                        flex: '0 0 auto',
-                        cursor: 'pointer',
-                      }}
-                    />
-                    <input
-                      id="hex"
-                      type="text"
-                      value={hex}
-                      spellCheck={false}
-                      onChange={(e) => setHex(e.target.value)}
-                      placeholder="#1B2A4A"
-                      style={{ flex: 1, minWidth: 0 }}
-                    />
-                  </div>
-                  {cleanHex ? (
-                    <div
-                      style={{
-                        marginTop: 8,
-                        padding: '8px 10px',
-                        borderRadius: 6,
-                        background: cleanHex,
-                        color: readableInk(cleanHex),
-                        fontSize: 13,
-                      }}
-                    >
-                      {describeHex(cleanHex)} · {cleanHex}
-                    </div>
-                  ) : (
-                    <div className="hint" style={{ color: '#c2410c' }}>
-                      That is not a readable hex code. Use a 3 or 6 character value such as #1B2A4A.
-                    </div>
-                  )}
-                </div>
-
-                <div className="field">
-                  <label className="lbl" htmlFor="colour-scope">
-                    Apply to
-                  </label>
-                  <select
-                    id="colour-scope"
-                    value={colourScope}
-                    onChange={(e) => setColourScope(e.target.value)}
-                  >
-                    <option value="the whole garment">The whole garment</option>
-                    <option value="the body of the garment only, leaving the collar, cuffs and any contrast trim exactly as referenced">
-                      Body only, keep trims as referenced
-                    </option>
-                    <option value="the collar, cuffs and contrast trim only, leaving the body of the garment exactly as referenced">
-                      Trims only, keep body as referenced
-                    </option>
-                    <option value="the background colour of the pattern only, leaving every motif in its referenced colour">
-                      Pattern background only
-                    </option>
-                  </select>
-                  <div className="hint">
-                    The emblem always keeps its own colours. Pattern geometry never changes, only
-                    the colours sitting inside it.
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="hint" style={{ marginTop: -4 }}>
-                Off by default. Leave it off and the garment colour is matched to the reference
-                exactly, which is what a standard catalogue run wants.
-              </div>
-            )}
-          </div>
-
-          <div className="panel">
-            <h2>Shots</h2>
-            {POSES.map((pose) => (
-              <div className="pose-block" key={pose.id}>
-                <div className="pose-row">
-                  <input
-                    id={`pose-${pose.id}`}
-                    type="checkbox"
-                    checked={selected.includes(pose.id)}
-                    onChange={() => togglePose(pose.id)}
-                  />
-                  <label htmlFor={`pose-${pose.id}`} className="nm">
-                    {pose.name}
-                    {pose.anchor ? <span className="tag">ANCHOR</span> : null}
-                  </label>
-                  {poseText[pose.id] !== pose.description ? (
-                    <button
-                      className="ghost tiny"
-                      onClick={() =>
-                        setPoseText((prev) => ({ ...prev, [pose.id]: pose.description }))
-                      }
-                    >
-                      Reset
-                    </button>
-                  ) : null}
-                </div>
-                {selected.includes(pose.id) ? (
-                  <textarea
-                    className="pose-text"
-                    value={poseText[pose.id]}
-                    onChange={(e) =>
-                      setPoseText((prev) => ({ ...prev, [pose.id]: e.target.value }))
-                    }
-                    rows={4}
-                  />
-                ) : null}
-              </div>
-            ))}
-            <div className="hint">
-              The anchor is generated first and passed to the others for identity, garment and print
-              only — never for camera angle.
-            </div>
-          </div>
-
-          <div className="panel">
-            <h2>Output</h2>
-            <div className="field">
-              <label className="lbl" htmlFor="engine">
-                Image engine
-              </label>
-              <select id="engine" value={engine} onChange={(e) => setEngine(e.target.value)}>
-                {ENGINE_LIST.map((en) => (
-                  <option key={en.id} value={en.id}>
-                    {en.label} — {en.vendor}
-                  </option>
-                ))}
-              </select>
-              <div className="engine-note">{route.note}</div>
-            </div>
-
-            <div className="field">
-              <label className="lbl" htmlFor="resolution">
-                Resolution
-              </label>
-              <select
-                id="resolution"
-                value={resolution}
-                onChange={(e) => setResolution(e.target.value)}
-              >
-                {Object.entries(RESOLUTIONS).map(([key, val]) => (
-                  <option key={key} value={key}>
-                    {val.label}
-                  </option>
-                ))}
-              </select>
-              <div className="hint">
-                Fine repeats break up below 2K. This engine caps at{' '}
-                {resolutionCapLabel(engine)}. On GPT Image 2.5 this also sets the quality tier,
-                which is the main thing driving what a shot costs.
-              </div>
-            </div>
-
-            <div className="field">
-              <label className="lbl" htmlFor="aspect">
-                Frame
-              </label>
-              <select id="aspect" value={aspect} onChange={(e) => setAspect(e.target.value)}>
-                {Object.entries(ASPECTS).map(([key, val]) => (
-                  <option key={key} value={key}>
-                    {val.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="field">
-              <label className="lbl" htmlFor="skin-texture">
-                Skin grain pass
-              </label>
-              <select
-                id="skin-texture"
-                value={skinTexture}
-                onChange={(e) => setSkinTexture(e.target.value)}
-              >
-                {Object.entries(SKIN_TEXTURE_LEVELS).map(([key, val]) => (
-                  <option key={key} value={key}>
-                    {val.label}
-                  </option>
-                ))}
-              </select>
-              <div className="hint">
-                Applied to the display copy only. Turn it off if the engine is already
-                producing good skin — stacking grain on top reads as artificial texture
-                buildup, which is a documented rejection reason.
-              </div>
-            </div>
-
-            <div className="field">
-              <label className="lbl" htmlFor="notes">
-                Additional direction
-              </label>
-              <textarea
-                id="notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Anything specific to this set. Leave blank for standard catalogue treatment."
-              />
-            </div>
-          </div>
-
-          <div className="panel">
-            <button className="primary" onClick={() => runSet(selected)} disabled={busy}>
-              {busy ? 'Working…' : `Generate ${selected.length} shot${selected.length === 1 ? '' : 's'}`}
-            </button>
-            <div style={{ height: 8 }} />
-            <button
-              style={{ width: '100%' }}
-              onClick={() => runSet(anchorPose ? [anchorPose.id] : [])}
-              disabled={busy || !anchorPose}
-            >
-              Pattern test — anchor shot only
-            </button>
-            <div className="hint">
-              Use the pattern test to check a print in one call before spending a full set.
-            </div>
-          </div>
-
-          <div className="panel">
-            <details>
-              <summary>Rules in force on every shot</summary>
-              <ul className="rules" style={{ marginTop: 10 }}>
-                {FIDELITY_RULES.map((rule, i) => (
-                  <li key={i}>{rule}</li>
-                ))}
-              </ul>
-            </details>
-          </div>
-        </div>
-
-        {/* ---------------- results ---------------- */}
-        <div>
-          {log.length ? <div className="log">{log.join('\n')}</div> : null}
-
-          {results.length ? (
-            <div className="toolbar">
-              <span className="status">
-                {doneCount} of {results.length} complete
-              </span>
-              <button className="ghost" onClick={downloadAll} disabled={!doneCount}>
-                Download all
-              </button>
-            </div>
-          ) : null}
-
-          {doneCount > 0 ? (
-            <div className="panel qc">
-              <h2>
-                Delivery QC — {qcPassed} of {qcItems.length} checked
-              </h2>
-              <div className="hint" style={{ marginTop: -6, marginBottom: 10 }}>
-                Every item below is a fault the client has documented in delivered imagery.
-                Work through the set at 100 percent zoom before sending anything out.
-              </div>
-              {DEFECT_GROUPS.map((group) => (
-                <div key={group} className="qc-group">
-                  <div className="qc-group-name">{group}</div>
-                  {qcItems
-                    .filter((q) => q.group === group)
-                    .map((q) => (
-                      <label className="qc-row" key={q.id}>
-                        <input
-                          type="checkbox"
-                          checked={!!qcDone[q.id]}
-                          onChange={() =>
-                            setQcDone((prev) => ({ ...prev, [q.id]: !prev[q.id] }))
-                          }
-                        />
-                        <span>
-                          <strong>{q.name}</strong>
-                          <em>{q.check}</em>
-                        </span>
-                      </label>
-                    ))}
-                </div>
-              ))}
-              <div className="toolbar" style={{ marginTop: 12, marginBottom: 0 }}>
-                <button className="ghost" onClick={() => setQcDone({})}>
-                  Reset checklist
-                </button>
-                <span className="status">
-                  {qcPassed === qcItems.length ? 'Cleared for delivery' : 'Not yet cleared'}
-                </span>
-              </div>
-            </div>
-          ) : null}
-
-          {results.length === 0 ? (
-            <div className="empty">
-              Pick a model, add a garment reference and a tight crop of the pattern, then run the
-              pattern test.
-              <br />
-              Results appear here on a neutral grey mat so colour and print read true.
-            </div>
-          ) : (
-            <div className="grid">
-              {results.map((r) => (
-                <div className="card" key={r.poseId}>
-                  <div className="card-mat">
-                    {r.display ? (
-                      <img src={r.display} alt={r.name} />
-                    ) : (
-                      <div className="pending">{r.status}</div>
-                    )}
-                  </div>
-                  <div className="card-body">
-                    <div className="card-title">
-                      <strong>{r.name}</strong>
-                      <span>{r.status}</span>
-                    </div>
-
-                    {r.error ? <div className="status err">{r.error}</div> : null}
-
-                    {r.display ? (
-                      <>
-                        <div className="card-actions" style={{ marginBottom: 8 }}>
-                          <button
-                            className="ghost"
-                            onClick={() => downloadDataUrl(r.display, `${r.poseId}.png`)}
-                          >
-                            Download
-                          </button>
-                          <button
-                            className="ghost"
-                            onClick={() => downloadDataUrl(r.raw, `${r.poseId}-raw.png`)}
-                          >
-                            Raw
-                          </button>
-                        </div>
-                        <input
-                          type="text"
-                          placeholder="Fix one thing, e.g. shorten the nails"
-                          value={refineText[r.poseId] || ''}
-                          onChange={(e) =>
-                            setRefineText((prev) => ({ ...prev, [r.poseId]: e.target.value }))
-                          }
-                        />
-                        <div style={{ height: 6 }} />
-                        <button
-                          className="ghost"
-                          onClick={() => runRefine(r.poseId)}
-                          disabled={busy || !(refineText[r.poseId] || '').trim()}
-                        >
-                          Refine this shot
-                        </button>
-                      </>
-                    ) : null}
-                  </div>
+          </label>
+          {uploadFiles.length > 0 && (
+            <div className="thumbs">
+              {uploadFiles.map((r, i) => (
+                <div className="thumb" key={i}>
+                  <img src={r.dataUrl} alt={r.name} />
+                  <button className="thumb-x" onClick={() => onRemoveUpload(i)} title="Remove">
+                    ×
+                  </button>
                 </div>
               ))}
             </div>
           )}
         </div>
+      ) : (
+        <p className="model-hint">
+          Using <b>{current?.name}</b> — kept consistent across all five shots.
+        </p>
+      )}
+    </div>
+  );
+}
+
+export default function Page() {
+  const [refs, setRefs] = useState({ garment: [], secondary: [], model: [], shoes: [], composition: [] });
+  const [productDesc, setProductDesc] = useState("");
+  const [secondaryDesc, setSecondaryDesc] = useState("");
+  const [notes, setNotes] = useState("");
+  const [model, setModel] = useState(DEFAULT_ENGINE);
+  const [aspect, setAspect] = useState("3:4");
+  const [quality, setQuality] = useState("high");
+  const [background, setBackground] = useState("opaque");
+  // --- added by the GPT Image 2.5 layer. All default to current behaviour. ---
+  const [strict, setStrict] = useState(false);
+  const [detail, setDetail] = useState("standard");
+  const [outputFormat, setOutputFormat] = useState("png");
+  const [openDiag, setOpenDiag] = useState({}); // slot -> bool
+
+  const [selectedModel, setSelectedModel] = useState(MODEL_PRESETS[0].key);
+  const [presetData, setPresetData] = useState({}); // key -> dataURL cache
+  const [gender, setGender] = useState("women");
+  // Kidswear runs garment-only: ghost mannequin, flat lay or hanging. No person
+  // is generated, so there is no model picker in this category.
+  const [category, setCategory] = useState("adult"); // "adult" | "kids"
+  const [ageBand, setAgeBand] = useState("6-7");
+  const [presentation, setPresentation] = useState("ghost");
+  const isKids = category === "kids";
+
+  const [garmentType, setGarmentType] = useState("upper");
+  const [poses, setPoses] = useState(
+    POSE_ORDER.map((key) => ({ key, enabled: true, poseRef: [] }))
+  );
+  const [results, setResults] = useState({});
+  const [anchor, setAnchor] = useState(null);
+  const [refineText, setRefineText] = useState({}); // slot -> instruction
+  const [refineErr, setRefineErr] = useState({}); // slot -> error message
+
+  // Load the selected preset model image and cache it as a dataURL.
+  useEffect(() => {
+    if (selectedModel === "upload" || presetData[selectedModel]) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = MODEL_PRESETS.find((x) => x.key === selectedModel);
+        const fileList = m.files && m.files.length ? m.files : [m.file];
+        const dataUrls = [];
+        for (const fname of fileList) {
+          const res = await fetch(`/models/${fname}`);
+          const blob = await res.blob();
+          dataUrls.push(await downscale(blob, 1024));
+        }
+        if (!cancelled) setPresetData((prev) => ({ ...prev, [selectedModel]: dataUrls }));
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedModel, presetData]);
+
+  const genderPresets = MODEL_PRESETS.filter((m) => m.gender === gender);
+
+  // When gender changes, keep the selection valid: stay on a preset of this
+  // gender if possible, otherwise fall back to "Upload your own".
+  useEffect(() => {
+    if (selectedModel === "upload") return;
+    if (!genderPresets.some((m) => m.key === selectedModel)) {
+      setSelectedModel(genderPresets[0]?.key || "upload");
+    }
+  }, [gender]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const engine = getEngine(model);
+  const detailDim = (DETAIL_LEVELS.find((d) => d.id === detail) || DETAIL_LEVELS[0]).dim;
+
+  // Switching engine must never leave an unsupported setting selected.
+  useEffect(() => {
+    if (!isOpenAI(model)) return; // other providers ignore these settings entirely
+    if (!engine.qualities.includes(quality)) setQuality(engine.defaultQuality);
+    if (background === "transparent" && !engine.transparent) setBackground("opaque");
+  }, [model]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const ratioObj = ASPECT_RATIOS.find((a) => a.id === aspect) || ASPECT_RATIOS[0];
+  const enabledCount = poses.filter((p) => p.enabled).length;
+  const anyDone = Object.values(results).some((r) => r?.status === "done");
+  const busy = Object.values(results).some((r) => r?.status === "loading");
+  const FRONT = POSE_ORDER[0];
+
+  const modelRefDataUrls =
+    selectedModel === "upload"
+      ? refs.model.map((r) => r.dataUrl)
+      : Array.isArray(presetData[selectedModel])
+      ? presetData[selectedModel]
+      : presetData[selectedModel]
+      ? [presetData[selectedModel]]
+      : [];
+  const hasModel = modelRefDataUrls.length > 0;
+  const hasRequired = isKids ? refs.garment.length > 0 : refs.garment.length > 0 && hasModel;
+
+  function adder(groupId, cap) {
+    return async (fileList) => {
+      const files = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
+      const added = [];
+      for (const f of files) {
+        try {
+          added.push({ dataUrl: await downscale(f), name: f.name, file: f });
+        } catch {
+          /* skip */
+        }
+      }
+      setRefs((prev) => ({ ...prev, [groupId]: [...prev[groupId], ...added].slice(0, cap) }));
+    };
+  }
+  function remover(groupId) {
+    return (i) => setRefs((prev) => ({ ...prev, [groupId]: prev[groupId].filter((_, idx) => idx !== i) }));
+  }
+
+  function togglePose(key) {
+    setPoses((prev) => prev.map((p) => (p.key === key ? { ...p, enabled: !p.enabled } : p)));
+  }
+  function addPoseRef(key) {
+    return async (fileList) => {
+      const files = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
+      const added = [];
+      for (const f of files) {
+        try {
+          added.push({ dataUrl: await downscale(f), name: f.name, file: f });
+        } catch {
+          /* skip */
+        }
+      }
+      setPoses((prev) =>
+        prev.map((p) => (p.key === key ? { ...p, poseRef: [...p.poseRef, ...added].slice(0, 2) } : p))
+      );
+    };
+  }
+  function removePoseRef(key, i) {
+    setPoses((prev) =>
+      prev.map((p) => (p.key === key ? { ...p, poseRef: p.poseRef.filter((_, idx) => idx !== i) } : p))
+    );
+  }
+
+  // ---- request plumbing shared by generate + refine ----
+  // One route, one request shape, whichever engine is selected.
+  function requestBody(sendImages, prompt, size) {
+    return {
+      images: sendImages,
+      prompt,
+      model,
+      quality,
+      size,
+      background,
+      outputFormat,
+      action: sendImages.length ? "edit" : "generate",
+    };
+  }
+
+  async function readError(res, what = "Generation") {
+    let msg = "";
+    try {
+      const j = await res.json();
+      msg = j.error || "";
+    } catch {
+      /* non-JSON body */
+    }
+    if (!msg) {
+      if (res.status === 413) msg = "Too much image data for one request. Use fewer or smaller reference photos, or drop reference detail to Standard.";
+      else if (res.status === 504 || res.status === 502)
+        msg = `The request timed out. ${engine.id.includes("2.5") ? "Sunburst at Maximum can take up to two minutes — try Extra high, or Flare." : "Try Medium quality or fewer reference photos."}`;
+      else msg = `${what} failed (HTTP ${res.status}).`;
+    }
+    return msg;
+  }
+
+  async function generateSlot(slotObj, anchorImg) {
+    if (!hasRequired) return null;
+    const slot = slotObj.key;
+    const poseRefs = slotObj.poseRef || [];
+    const set = isKids ? KIDS_POSE_SETS[presentation][slot] : POSE_SETS[garmentType][slot];
+
+    // Three modes:
+    //  • pose    — a pose photo leads; anchor dropped (pose must dominate).
+    //  • reframe — the Full Front anchor LEADS as the base image; the other four
+    //              shots become reframings of that one person (identity lock).
+    //  • base    — the Full Front itself (no anchor yet): build from references.
+    // Reference sets are built in a fixed order, and the SAME order is turned
+    // into numbered role labels for the prompt, so the engine is never left to
+    // guess which image controls the garment, the face, the pose or the mood.
+    const faces = async (cap) =>
+      selectedModel === "upload"
+        ? await refUrls(refs.model, cap, detailDim)
+        : (await presetUrls(selectedModel, detailDim)).slice(0, cap);
+
+    let images;
+    let mode;
+    let roleOrder;
+    if (isKids) {
+      // Garment-only. No model, no pose reference, no identity anchor.
+      mode = "kids";
+      const garment = await refUrls(refs.garment, SEND.product, detailDim);
+      const secondary = await refUrls(refs.secondary, SEND.secondary, detailDim);
+      const shoes = await refUrls(refs.shoes, SEND.shoes, detailDim);
+      const comp = await refUrls(refs.composition, SEND.composition, detailDim);
+      images = [...garment, ...secondary, ...shoes, ...comp];
+      roleOrder = [
+        { group: "garment", count: garment.length },
+        { group: "secondary", count: secondary.length },
+        { group: "shoes", count: shoes.length },
+        { group: "composition", count: comp.length },
+      ];
+    } else if (poseRefs.length) {
+      mode = "pose";
+      const pose = await refUrls(poseRefs, 1, detailDim);
+      const garment = await refUrls(refs.garment, SEND_POSE.product, detailDim);
+      const secondary = await refUrls(refs.secondary, SEND_POSE.secondary, detailDim);
+      const model_ = await faces(SEND_POSE.model);
+      const shoes = await refUrls(refs.shoes, SEND_POSE.shoes, detailDim);
+      const comp = await refUrls(refs.composition, SEND_POSE.composition, detailDim);
+      images = [...pose, ...garment, ...secondary, ...model_, ...shoes, ...comp];
+      roleOrder = [
+        { group: "poseRef", count: pose.length },
+        { group: "garment", count: garment.length },
+        { group: "secondary", count: secondary.length },
+        { group: "model", count: model_.length },
+        { group: "shoes", count: shoes.length },
+        { group: "composition", count: comp.length },
+      ];
+    } else if (anchorImg) {
+      mode = "reframe";
+      const garment = await refUrls(refs.garment, SEND_REFRAME.product, detailDim);
+      const model_ = await faces(SEND_REFRAME.model);
+      images = [anchorImg, ...garment, ...model_];
+      roleOrder = [
+        { group: "anchor", count: 1 },
+        { group: "garment", count: garment.length },
+        { group: "model", count: model_.length },
+      ];
+    } else {
+      mode = "base";
+      const garment = await refUrls(refs.garment, SEND.product, detailDim);
+      const secondary = await refUrls(refs.secondary, SEND.secondary, detailDim);
+      const model_ = await faces(SEND.model);
+      const shoes = await refUrls(refs.shoes, SEND.shoes, detailDim);
+      const comp = await refUrls(refs.composition, SEND.composition, detailDim);
+      images = [...garment, ...secondary, ...model_, ...shoes, ...comp];
+      roleOrder = [
+        { group: "garment", count: garment.length },
+        { group: "secondary", count: secondary.length },
+        { group: "model", count: model_.length },
+        { group: "shoes", count: shoes.length },
+        { group: "composition", count: comp.length },
+      ];
+    }
+    const roleLines = buildRoleLines(roleOrder);
+
+    const picked = isKids ? null : pickPose(garmentType, slot);
+    const posePrompt = isKids ? set.framing : mode === "pose" ? set.crop : picked.prompt;
+    const poseLabel = isKids
+      ? KIDS_PRESENTATIONS.find((x) => x.id === presentation)?.label.split(" — ")[0]
+      : mode === "pose"
+      ? "from your pose photo"
+      : picked.variation;
+
+    setResults((prev) => {
+      const old = prev[slot];
+      if (old?.url) URL.revokeObjectURL(old.url);
+      return { ...prev, [slot]: { status: "loading" } };
+    });
+
+    try {
+      const size = sizeFor(model, ratioObj);
+      const faceDesc = MODEL_PRESETS.find((m) => m.key === selectedModel)?.face || "";
+      const prompt = isKids
+        ? buildKidsPrompt({
+            presentation,
+            slotFraming: set.framing,
+            ageBand,
+            productDesc,
+            secondaryDesc,
+            hasSecondary: refs.secondary.length > 0,
+            hasShoes: refs.shoes.length > 0,
+            notes,
+            strict,
+            roleLines,
+          })
+        : mode === "reframe"
+          ? buildReframePrompt({ posePrompt: picked.prompt, gender, faceDesc, productDesc, notes, strict, roleLines })
+          : buildPrompt({
+              posePrompt,
+              focus: FOCUS[garmentType],
+              gender,
+              faceDesc,
+              productDesc,
+              secondaryDesc,
+              hasSecondary: refs.secondary.length > 0,
+              hasShoes: refs.shoes.length > 0,
+              hasComposition: refs.composition.length > 0,
+              hasPoseRef: mode === "pose",
+              hasAnchor: false,
+              notes,
+              strict,
+              roleLines,
+            });
+      const sendImages = await fitPayload(images);
+      const res = await fetch(routeFor(model), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody(sendImages, prompt, size)),
+      });
+      if (!res.ok) {
+        const msg = await readError(res);
+        setResults((prev) => ({ ...prev, [slot]: { status: "error", error: msg } }));
+        return null;
+      }
+      const meta = decodeMeta(res.headers.get("x-neves-meta"));
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setResults((prev) => ({ ...prev, [slot]: { status: "done", url, blob, pose: poseLabel, meta } }));
+      if (slot === FRONT && !isKids) {
+        const anchorData = await downscale(blob, 1100);
+        setAnchor(anchorData);
+        return anchorData;
+      }
+      return null;
+    } catch (err) {
+      setResults((prev) => ({ ...prev, [slot]: { status: "error", error: err?.message || "Network error." } }));
+      return null;
+    }
+  }
+
+  // Refine an existing result with a manual instruction. Feeds the current image
+  // back in as the FIRST reference so the model keeps everything and only applies
+  // the typed change. Keeps the existing image if the refine fails.
+  async function refineSlot(slotObj, instruction) {
+    const slot = slotObj.key;
+    const current = results[slot];
+    const text = (instruction || "").trim();
+    if (!current?.blob || !text) return;
+
+    setRefineErr((prev) => ({ ...prev, [slot]: null }));
+
+    let baseDataUrl;
+    try {
+      baseDataUrl = await downscale(current.blob, 1536);
+    } catch {
+      setRefineErr((prev) => ({ ...prev, [slot]: "Could not read the current image." }));
+      return;
+    }
+
+    const garmentRefs = await refUrls(refs.garment, 3, detailDim);
+    const faceRefs = isKids
+      ? []
+      : selectedModel === "upload"
+      ? await refUrls(refs.model, 2, detailDim)
+      : (await presetUrls(selectedModel, detailDim)).slice(0, 2);
+    const images = [
+      baseDataUrl, // current result — the image to edit (first)
+      ...garmentRefs,
+      ...faceRefs,
+    ];
+    const roleLines = buildRoleLines([
+      { group: "current", count: 1 },
+      { group: "garment", count: garmentRefs.length },
+      { group: "model", count: faceRefs.length },
+    ]);
+
+    const oldUrl = current.url;
+    // Keep blob/url during loading so the refine box stays and the image returns on error.
+    setResults((prev) => ({ ...prev, [slot]: { ...prev[slot], status: "loading" } }));
+
+    try {
+      const size = sizeFor(model, ratioObj);
+      const prompt = isKids
+        ? buildKidsRefinePrompt(text, { strict, roleLines, productDesc })
+        : buildRefinePrompt(text, { strict, roleLines, productDesc });
+      const sendImages = await fitPayload(images);
+      const res = await fetch(routeFor(model), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody(sendImages, prompt, size)),
+      });
+      if (!res.ok) {
+        const msg = await readError(res, "Refine");
+        setResults((prev) => ({ ...prev, [slot]: { ...prev[slot], status: "done" } })); // restore image
+        setRefineErr((prev) => ({ ...prev, [slot]: msg }));
+        return;
+      }
+      const meta = decodeMeta(res.headers.get("x-neves-meta"));
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      if (oldUrl) URL.revokeObjectURL(oldUrl);
+      setResults((prev) => ({
+        ...prev,
+        [slot]: { status: "done", url, blob, pose: prev[slot]?.pose, refined: true, meta },
+      }));
+      setRefineText((prev) => ({ ...prev, [slot]: "" }));
+    } catch (err) {
+      setResults((prev) => ({ ...prev, [slot]: { ...prev[slot], status: "done" } })); // restore image
+      setRefineErr((prev) => ({ ...prev, [slot]: err?.message || "Network error." }));
+    }
+  }
+
+  async function generateAll() {
+    if (!hasRequired || busy) return;
+    if (isKids) {
+      await Promise.all(poses.filter((p) => p.enabled).map((p) => generateSlot(p, null)));
+      return;
+    }
+    const frontObj = poses.find((p) => p.key === FRONT);
+    const others = poses.filter((p) => p.enabled && p.key !== FRONT);
+    let anchorImg = anchor;
+    if (frontObj?.enabled) {
+      anchorImg = (await generateSlot(frontObj, null)) || anchor;
+    }
+    await Promise.all(others.map((p) => generateSlot(p, anchorImg)));
+  }
+
+  function download(p) {
+    const r = results[p.key];
+    if (!r || r.status !== "done") return;
+    const a = document.createElement("a");
+    a.href = r.url;
+    a.download = `neves_${p.key}.${outputFormat === "jpeg" ? "jpg" : outputFormat}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  function downloadAll() {
+    poses.filter((p) => results[p.key]?.status === "done").forEach((p, i) => setTimeout(() => download(p), i * 350));
+  }
+
+  const canGenerate = hasRequired && enabledCount > 0 && !busy;
+  const previewStyle = { aspectRatio: `${ratioObj.w} / ${ratioObj.h}` };
+
+  return (
+    <div className="shell">
+      <header className="masthead">
+        <div className="masthead-brand">
+          <img className="brandmark" src="/brand/neves-white.png" alt="NEVES" />
+          <div className="wordmark">
+            <span className="wordmark-one">ONE</span>
+            <span className="wordmark-dot" />
+            <span className="wordmark-app">{isKids ? "Kidswear" : "Five Poses"}</span>
+          </div>
+          <div className="tagline">Pick a model, add your product — five consistent poses on white.</div>
+        </div>
+        <div className="masthead-meta">
+          <span className="meta-label">Engine</span>
+          <b>{engine.label.split(" — ")[0]}</b>
+          <span className="meta-sub">
+            {isOpenAI(model) ? QUALITY_LABELS[quality] || quality : "engine defaults"}
+            {strict ? " · strict" : ""}
+          </span>
+          {isNewGeneration(model) && <span className="pill">2.5</span>}
+          <a className="version-btn" href="/classic">
+            ← Classic (v1)
+          </a>
+          <a className="version-link" href="/classic">
+            ← Classic v1
+          </a>
+        </div>
+      </header>
+
+      <div className="layout">
+        <aside className="panel controls">
+          <div>
+            <p className="eyebrow">1 · The product</p>
+            <div className="garment-type">
+              <span className="garment-type-label">Category</span>
+              <div className="seg">
+                <button
+                  type="button"
+                  className={`seg-btn${!isKids ? " on" : ""}`}
+                  onClick={() => setCategory("adult")}
+                >
+                  Womens / Mens
+                </button>
+                <button
+                  type="button"
+                  className={`seg-btn${isKids ? " on" : ""}`}
+                  onClick={() => setCategory("kids")}
+                >
+                  Kids
+                </button>
+              </div>
+              <span className="garment-type-hint">
+                {isKids
+                  ? "Kidswear is shot garment-only, the way most children's catalogues are: ghost mannequin, flat lay or on a hanger, cut to true child proportions. No child is generated."
+                  : "Adult womenswear and menswear, generated on a model."}
+              </span>
+            </div>
+
+            {isKids && (
+              <div className="garment-type">
+                <span className="garment-type-label">Age band — sets the garment scale</span>
+                <select className="select" value={ageBand} onChange={(e) => setAgeBand(e.target.value)}>
+                  {KIDS_AGE_BANDS.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.label} · {b.height}
+                    </option>
+                  ))}
+                </select>
+                <span className="garment-type-hint">
+                  This is what stops a size 4 tee rendering as a shrunken adult tee. Body length, sleeves,
+                  neck opening, armholes and trims all scale to this band.
+                </span>
+
+                <span className="garment-type-label" style={{ marginTop: 12 }}>
+                  Presentation
+                </span>
+                <select
+                  className="select"
+                  value={presentation}
+                  onChange={(e) => setPresentation(e.target.value)}
+                >
+                  {KIDS_PRESENTATIONS.map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="garment-type-hint">
+                  {KIDS_PRESENTATIONS.find((x) => x.id === presentation)?.hint}
+                </span>
+              </div>
+            )}
+
+            {!isKids && (
+            <div className="garment-type">
+              <span className="garment-type-label">Garment type — sets the shots &amp; crops</span>
+              <div className="seg">
+                {GARMENT_TYPES.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={`seg-btn${garmentType === t.id ? " on" : ""}`}
+                    onClick={() => setGarmentType(t.id)}
+                    title={t.label}
+                  >
+                    {t.id === "upper" ? "Upper body" : t.id === "lower" ? "Lower body" : "Dress / full"}
+                  </button>
+                ))}
+              </div>
+              <span className="garment-type-hint">
+                {garmentType === "upper"
+                  ? "Shirts, tees, jackets, blazers — torso-focused framing."
+                  : garmentType === "lower"
+                  ? "Pants, jeans, trousers, skirts — full-body + waist-down framing."
+                  : "Dresses & full outfits — full-length framing throughout."}
+              </span>
+            </div>
+            )}
+            <RefZone group={G.garment} files={refs.garment} onAdd={adder("garment", G.garment.cap)} onRemove={remover("garment")} />
+            <textarea
+              className="notes product-desc"
+              placeholder="Which item is THE product? e.g. “the white polo shirt — the chinos are just styling”. The priority item is reproduced exactly; anything else stays secondary."
+              value={productDesc}
+              onChange={(e) => setProductDesc(e.target.value)}
+            />
+            <div className="sub-divider" />
+            <RefZone group={G.secondary} files={refs.secondary} onAdd={adder("secondary", G.secondary.cap)} onRemove={remover("secondary")} />
+            <textarea
+              className="notes product-desc"
+              placeholder="Describe the secondary item, e.g. “straight-leg jeans / pants” — worn together with the main product."
+              value={secondaryDesc}
+              onChange={(e) => setSecondaryDesc(e.target.value)}
+            />
+          </div>
+
+          {!isKids && (
+          <div>
+            <p className="eyebrow">2 · Model</p>
+            <div className="gender-toggle">
+              <button
+                type="button"
+                className={`seg-btn${gender === "women" ? " on" : ""}`}
+                onClick={() => setGender("women")}
+              >
+                Women
+              </button>
+              <button
+                type="button"
+                className={`seg-btn${gender === "men" ? " on" : ""}`}
+                onClick={() => setGender("men")}
+              >
+                Men
+              </button>
+            </div>
+            <ModelPicker
+              presets={genderPresets}
+              selected={selectedModel}
+              onSelect={setSelectedModel}
+              uploadFiles={refs.model}
+              onAddUpload={adder("model", 10)}
+              onRemoveUpload={remover("model")}
+            />
+          </div>
+          )}
+
+          <div>
+            <p className="eyebrow">3 · Shoes (optional)</p>
+            <RefZone group={G.shoes} files={refs.shoes} onAdd={adder("shoes", G.shoes.cap)} onRemove={remover("shoes")} />
+            {!hasRequired && (
+              <p className="req-hint">
+                {isKids
+                  ? "Add at least one Product image to generate."
+                  : "Add at least one Product image and choose a Model to generate."}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <p className="eyebrow">4 · Styling notes (optional)</p>
+            <textarea
+              className="notes"
+              placeholder="e.g. tuck the shirt in, sleeves rolled, gold hoop earrings, hair down — kept consistent across all five"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <p className="eyebrow">5 · Settings</p>
+            <div className="settings-grid">
+              <div className="full">
+                <label className="field-label">Engine</label>
+                <select className="select" value={model} onChange={(e) => setModel(e.target.value)}>
+                  {ENGINE_GROUPS.map((g) => (
+                    <optgroup key={g} label={g}>
+                      {MODELS.filter((m) => ENGINES[m.id].group === g).map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <p className="field-note">{engine.blurb}</p>
+              </div>
+              <div>
+                <label className="field-label">Aspect ratio</label>
+                <select className="select" value={aspect} onChange={(e) => setAspect(e.target.value)}>
+                  {ASPECT_RATIOS.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {isOpenAI(model) && (
+              <div>
+                <label className="field-label">Render quality</label>
+                <select className="select" value={quality} onChange={(e) => setQuality(e.target.value)}>
+                  {engine.qualities.map((q) => (
+                    <option key={q} value={q}>
+                      {QUALITY_LABELS[q] || q}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              )}
+              {isOpenAI(model) && (
+              <div>
+                <label className="field-label">Background</label>
+                <select className="select" value={background} onChange={(e) => setBackground(e.target.value)}>
+                  {BACKGROUNDS.map((b) => (
+                    <option key={b.id} value={b.id} disabled={b.id === "transparent" && !engine.transparent}>
+                      {b.label}
+                      {b.id === "transparent" && !engine.transparent ? " — not on this engine" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              )}
+              {isOpenAI(model) && (
+              <div>
+                <label className="field-label">Output format</label>
+                <select
+                  className="select"
+                  value={outputFormat}
+                  onChange={(e) => setOutputFormat(e.target.value)}
+                >
+                  <option value="png">PNG — master file</option>
+                  <option value="webp">WebP — smaller delivery</option>
+                  <option value="jpeg" disabled={background === "transparent"}>
+                    JPEG — smallest{background === "transparent" ? " — no transparency" : ""}
+                  </option>
+                </select>
+              </div>
+              )}
+              {!isOpenAI(model) && (
+                <div className="full">
+                  <p className="field-note">
+                    This engine sets its own quality, background and file format. Aspect ratio, references
+                    and styling notes all still apply.
+                  </p>
+                </div>
+              )}
+              <div className="full">
+                <label className="field-label">Reference detail</label>
+                <select className="select" value={detail} onChange={(e) => setDetail(e.target.value)}>
+                  {DETAIL_LEVELS.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="field-note">
+                  High keeps more of the real print and weave in the references. Very large sets may still be
+                  reduced to fit the 4.5 MB request limit.
+                </p>
+              </div>
+
+              <div className="full toggle-block">
+                <label className="switch">
+                  <input type="checkbox" checked={strict} onChange={() => setStrict((v) => !v)} />
+                  <span>
+                    <b>Strict product fidelity</b>
+                    <em>
+                      Labels every reference by role and adds the full preservation ruleset. Recommended for
+                      catalogue work.
+                    </em>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <p className="eyebrow">6 · Reference look (optional)</p>
+            <RefZone group={G.composition} files={refs.composition} onAdd={adder("composition", G.composition.cap)} onRemove={remover("composition")} />
+          </div>
+
+          <hr className="divider" />
+
+          <button className="generate" disabled={!canGenerate} onClick={generateAll}>
+            {busy ? "Generating…" : `Generate ${enabledCount} pose${enabledCount === 1 ? "" : "s"}`}
+          </button>
+          <button className="ghost-btn" disabled={!anyDone} onClick={downloadAll}>
+            Download all
+          </button>
+        </aside>
+
+        <main>
+          <div className="sheet-head">
+            <div className="sheet-title">{isKids ? "Garment views" : "Poses"}</div>
+            <div className="sheet-note">
+              {aspect} · {background === "transparent" ? "transparent" : "white #FFFFFF"} ·{" "}
+              {engine.label.split(" — ")[0]} ·{" "}
+              {isKids
+                ? `${KIDS_AGE_BANDS.find((b) => b.id === ageBand)?.label.split(" (")[0]} scale · garment only`
+                : "Full Front sets the model · others lock to it"}{" "}
+              · untick to skip
+            </div>
+          </div>
+
+          <div className="sheet">
+            {poses.map((p) => {
+              const r = results[p.key];
+              const status = r?.status || "idle";
+              const isFront = p.key === FRONT;
+              const label = isKids
+                ? KIDS_POSE_SETS[presentation][p.key].label
+                : POSE_SETS[garmentType][p.key].label;
+              return (
+                <section key={p.key} className={`card${p.enabled ? "" : " off"}`}>
+                  <div className="card-top">
+                    <div className="card-icon">
+                      <PersonIcon />
+                    </div>
+                    <div className="card-heading">
+                      <div className="card-name">{label}</div>
+                      <div className="card-hint">
+                        {isKids
+                          ? "garment only"
+                          : isFront
+                          ? "★ sets the model"
+                          : anchor
+                          ? "locks to the model"
+                          : "Pose"}{" "}
+                        · {aspect}
+                      </div>
+                    </div>
+                    <div className="card-include">
+                      <input
+                        type="checkbox"
+                        checked={p.enabled}
+                        onChange={() => togglePose(p.key)}
+                        title="Include in generation"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="preview" style={previewStyle}>
+                    {status === "done" && <img src={r.url} alt={label} />}
+                    {status === "loading" && <div className="spinner" />}
+                    {status === "error" && <div className="preview-error">{r.error}</div>}
+                    {status === "idle" && <div className="preview-empty">Not generated yet</div>}
+                  </div>
+
+                  {status === "done" && (r.pose || r.refined) && (
+                    <div className="pose-used">
+                      {r.pose ? `Pose: ${r.pose}` : "Pose"}
+                      {r.refined ? " · refined" : ""}
+                    </div>
+                  )}
+
+                  {status === "done" && r.meta && (
+                    <div className="diag">
+                      <button
+                        type="button"
+                        className="diag-toggle"
+                        onClick={() => setOpenDiag((prev) => ({ ...prev, [p.key]: !prev[p.key] }))}
+                      >
+                        {r.meta.imageModelAlias} · {QUALITY_LABELS[r.meta.quality] || r.meta.quality} ·{" "}
+                        {(r.meta.latencyMs / 1000).toFixed(1)}s
+                        <span className="diag-caret">{openDiag[p.key] ? "\u2212" : "+"}</span>
+                      </button>
+                      {openDiag[p.key] && (
+                        <dl className="diag-body">
+                          <div>
+                            <dt>Image model</dt>
+                            <dd className="mono">{r.meta.imageModel}</dd>
+                          </div>
+                          <div>
+                            <dt>Size / action</dt>
+                            <dd>
+                              {r.meta.size} · {r.meta.action} · {r.meta.background} · {r.meta.outputFormat}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>References</dt>
+                            <dd>
+                              {r.meta.referenceCount} sent · {r.meta.attempts} attempt
+                              {r.meta.attempts === 1 ? "" : "s"}
+                            </dd>
+                          </div>
+                          {r.meta.requestId && (
+                            <div>
+                              <dt>Request ID</dt>
+                              <dd className="mono">{r.meta.requestId}</dd>
+                            </div>
+                          )}
+                          {r.meta.revisedPrompt && (
+                            <div className="diag-wide">
+                              <dt>Revised prompt</dt>
+                              <dd className="revised">{r.meta.revisedPrompt}</dd>
+                            </div>
+                          )}
+                        </dl>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="card-actions">
+                    <button
+                      className="mini-btn"
+                      disabled={!hasRequired || status === "loading"}
+                      onClick={() => generateSlot(p, isKids || isFront ? null : anchor)}
+                    >
+                      {status === "done" || status === "error"
+                        ? "Regenerate"
+                        : status === "loading"
+                        ? "Working…"
+                        : "Generate"}
+                    </button>
+                    <button className="mini-btn solid" disabled={status !== "done"} onClick={() => download(p)}>
+                      Download
+                    </button>
+                  </div>
+
+                  {r?.blob && (
+                    <div className="refine">
+                      <div className="refine-head">Not happy? Tweak it</div>
+                      <textarea
+                        className="refine-input"
+                        rows={2}
+                        placeholder="Describe what to change — e.g. “turn the head slightly left”, “brighten the lighting”, “fix the collar”, “less smiling”."
+                        value={refineText[p.key] || ""}
+                        disabled={status === "loading"}
+                        onChange={(e) => setRefineText((prev) => ({ ...prev, [p.key]: e.target.value }))}
+                      />
+                      <button
+                        className="mini-btn solid refine-btn"
+                        disabled={status === "loading" || !(refineText[p.key] || "").trim()}
+                        onClick={() => refineSlot(p, refineText[p.key] || "")}
+                      >
+                        {status === "loading" ? "Refining…" : "Refine this image"}
+                      </button>
+                      {refineErr[p.key] && <div className="refine-err">{refineErr[p.key]}</div>}
+                    </div>
+                  )}
+
+                  <div className="pose-ref">
+                    <div className="pose-ref-head">
+                      <span>Pose photo (optional)</span>
+                      <label className="pose-ref-btn">
+                        + Add
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          hidden
+                          onChange={(e) => {
+                            addPoseRef(p.key)(e.target.files);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                    </div>
+                    {p.poseRef.length > 0 && (
+                      <div className="thumbs small">
+                        {p.poseRef.map((r2, i) => (
+                          <div className="thumb" key={i}>
+                            <img src={r2.dataUrl} alt={r2.name} />
+                            <button className="thumb-x" onClick={() => removePoseRef(p.key, i)} title="Remove">
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+
+          <p className="footnote">
+            <b>How it works:</b> pick one of the four built-in models (or upload your own) and it's reused on
+            every run. Each card is a fixed framing with a fresh random pose, and the optional product box
+            tells the engine which item is the hero. The <b>Full Front</b> generates first and sets the model;
+            the other four lock to that exact face, skin, hair and features. Regenerate the Full Front to
+            re-roll, then the rest to match. Identity holds far better this way, though the odd frame may
+            still need a Regenerate — perfect lock needs a trained model.
+          </p>
+
+          <p className="footnote caution">
+            <b>Before it goes to a client:</b> these are generative renders, not composites of your original
+            files. GPT Image 2.5 preserves prints, logos and product geometry far better than GPT Image 2, but
+            no generative engine reproduces every motif, label or brand mark exactly, and results can vary
+            between runs on the same product. Check the print repeat, any text or logo, the colour and the
+            hands on every frame before delivery. Where a garment, bottle or label has to be pixel-exact,
+            shoot or cut out the real product and composite it.
+          </p>
+        </main>
       </div>
     </div>
   );
