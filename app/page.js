@@ -172,13 +172,19 @@ async function presetUrls(presetKey, maxDim) {
   return out;
 }
 
-const SEND = { product: 5, secondary: 3, model: 4, modelWithAnchor: 2, shoes: 2, composition: 1 };
+const SEND = { product: 5, logo: 2, secondary: 3, model: 4, modelWithAnchor: 2, shoes: 2, composition: 1 };
 // Lighter caps for the pose path (it also carries the pose photo), so the
 // request stays well under Vercel's 4.5 MB body limit.
-const SEND_POSE = { product: 4, secondary: 2, model: 3, shoes: 1, composition: 0 };
+const SEND_POSE = { product: 4, logo: 1, secondary: 2, model: 3, shoes: 1, composition: 0 };
 // Reframe path: the anchor (the finished Full Front) leads and carries the whole
 // look, so we only add a few product refs + the face to reinforce fidelity.
-const SEND_REFRAME = { product: 3, model: 3 };
+const SEND_REFRAME = { product: 3, logo: 2, model: 3 };
+// The emblem is a macro detail, so it is always sent at a higher resolution than
+// the other references regardless of the Detail setting. Sending a 1024px logo
+// crop is the main reason marks come back as soft approximations. The close-up
+// shot is where a mangled emblem is most visible, so it gets an extra crop.
+const LOGO_MIN_DIM = 1536;
+const LOGO_CLOSEUP_BONUS = 1;
 
 function PersonIcon() {
   return (
@@ -326,11 +332,12 @@ function ModelPicker({ presets, selected, onSelect, uploadFiles, onAddUpload, on
 }
 
 export default function Page() {
-  const [refs, setRefs] = useState({ garment: [], secondary: [], model: [], shoes: [], composition: [] });
+  const [refs, setRefs] = useState({ garment: [], logo: [], secondary: [], model: [], shoes: [], composition: [] });
   const [productDesc, setProductDesc] = useState("");
   const [secondaryDesc, setSecondaryDesc] = useState("");
   const [notes, setNotes] = useState("");
   const [productHex, setProductHex] = useState("");
+  const [logoNote, setLogoNote] = useState("");
   const [model, setModel] = useState(DEFAULT_ENGINE);
   const [aspect, setAspect] = useState("3:4");
   const [quality, setQuality] = useState("high");
@@ -520,6 +527,12 @@ export default function Page() {
         ? await refUrls(refs.model, cap, detailDim)
         : (await presetUrls(selectedModel, detailDim)).slice(0, cap);
 
+    // Macro crops always at LOGO_MIN_DIM or better, plus an extra crop on the
+    // close-up, which is the shot where a mangled emblem actually shows.
+    const logoCap = (base) => base + (slot === "closeUp" ? LOGO_CLOSEUP_BONUS : 0);
+    const logoUrls = (cap) =>
+      refUrls(refs.logo, logoCap(cap), Math.max(detailDim, LOGO_MIN_DIM));
+
     let images;
     let mode;
     let roleOrder;
@@ -527,12 +540,14 @@ export default function Page() {
       // Garment-only. No model, no pose reference, no identity anchor.
       mode = "kids";
       const garment = await refUrls(refs.garment, SEND.product, detailDim);
+      const logo = await logoUrls(SEND.logo);
       const secondary = await refUrls(refs.secondary, SEND.secondary, detailDim);
       const shoes = await refUrls(refs.shoes, SEND.shoes, detailDim);
       const comp = await refUrls(refs.composition, SEND.composition, detailDim);
-      images = [...garment, ...secondary, ...shoes, ...comp];
+      images = [...garment, ...logo, ...secondary, ...shoes, ...comp];
       roleOrder = [
         { group: "garment", count: garment.length },
+        { group: "logo", count: logo.length },
         { group: "secondary", count: secondary.length },
         { group: "shoes", count: shoes.length },
         { group: "composition", count: comp.length },
@@ -541,14 +556,16 @@ export default function Page() {
       mode = "pose";
       const pose = await refUrls(poseRefs, 1, detailDim);
       const garment = await refUrls(refs.garment, SEND_POSE.product, detailDim);
+      const logo = await logoUrls(SEND_POSE.logo);
       const secondary = await refUrls(refs.secondary, SEND_POSE.secondary, detailDim);
       const model_ = await faces(SEND_POSE.model);
       const shoes = await refUrls(refs.shoes, SEND_POSE.shoes, detailDim);
       const comp = await refUrls(refs.composition, SEND_POSE.composition, detailDim);
-      images = [...pose, ...garment, ...secondary, ...model_, ...shoes, ...comp];
+      images = [...pose, ...garment, ...logo, ...secondary, ...model_, ...shoes, ...comp];
       roleOrder = [
         { group: "poseRef", count: pose.length },
         { group: "garment", count: garment.length },
+        { group: "logo", count: logo.length },
         { group: "secondary", count: secondary.length },
         { group: "model", count: model_.length },
         { group: "shoes", count: shoes.length },
@@ -557,23 +574,27 @@ export default function Page() {
     } else if (anchorImg) {
       mode = "reframe";
       const garment = await refUrls(refs.garment, SEND_REFRAME.product, detailDim);
+      const logo = await logoUrls(SEND_REFRAME.logo);
       const model_ = await faces(SEND_REFRAME.model);
-      images = [anchorImg, ...garment, ...model_];
+      images = [anchorImg, ...garment, ...logo, ...model_];
       roleOrder = [
         { group: "anchor", count: 1 },
         { group: "garment", count: garment.length },
+        { group: "logo", count: logo.length },
         { group: "model", count: model_.length },
       ];
     } else {
       mode = "base";
       const garment = await refUrls(refs.garment, SEND.product, detailDim);
+      const logo = await logoUrls(SEND.logo);
       const secondary = await refUrls(refs.secondary, SEND.secondary, detailDim);
       const model_ = await faces(SEND.model);
       const shoes = await refUrls(refs.shoes, SEND.shoes, detailDim);
       const comp = await refUrls(refs.composition, SEND.composition, detailDim);
-      images = [...garment, ...secondary, ...model_, ...shoes, ...comp];
+      images = [...garment, ...logo, ...secondary, ...model_, ...shoes, ...comp];
       roleOrder = [
         { group: "garment", count: garment.length },
+        { group: "logo", count: logo.length },
         { group: "secondary", count: secondary.length },
         { group: "model", count: model_.length },
         { group: "shoes", count: shoes.length },
@@ -612,9 +633,11 @@ export default function Page() {
             strict,
             roleLines,
             colour,
+            hasLogo: refs.logo.length > 0,
+            logoNote,
           })
         : mode === "reframe"
-          ? buildReframePrompt({ posePrompt: picked.prompt, gender, faceDesc, productDesc, notes, strict, roleLines, colour })
+          ? buildReframePrompt({ posePrompt: picked.prompt, gender, faceDesc, productDesc, notes, strict, roleLines, colour, hasLogo: refs.logo.length > 0, logoNote })
           : buildPrompt({
               posePrompt,
               focus: FOCUS[garmentType],
@@ -628,6 +651,8 @@ export default function Page() {
               hasPoseRef: mode === "pose",
               hasAnchor: false,
               notes,
+              hasLogo: refs.logo.length > 0,
+              logoNote,
               strict,
               roleLines,
               colour,
@@ -703,7 +728,7 @@ export default function Page() {
       const size = sizeFor(model, ratioObj);
       const prompt = isKids
         ? buildKidsRefinePrompt(text, { strict, roleLines, productDesc })
-        : buildRefinePrompt(text, { strict, roleLines, productDesc, colour });
+        : buildRefinePrompt(text, { strict, roleLines, productDesc, colour, hasLogo: refs.logo.length > 0, logoNote });
       const sendImages = await fitPayload(images);
       const res = await fetch(routeFor(model), {
         method: "POST",
@@ -941,6 +966,27 @@ export default function Page() {
                 rather than a pixel-exact one (a final eyedropper tweak may still help).
               </p>
             </div>
+
+            <div className="sub-divider" />
+            <RefZone group={G.logo} files={refs.logo} onAdd={adder("logo", G.logo.cap)} onRemove={remover("logo")} />
+            <textarea
+              className="notes product-desc"
+              placeholder="Logo placement & size (optional) — e.g. “left chest, about 5 cm wide, pony faces right”."
+              value={logoNote}
+              onChange={(e) => setLogoNote(e.target.value)}
+            />
+            {refs.logo.length > 0 ? (
+              <p className="hex-note">
+                The emblem is sent at higher resolution than the other references and is treated as
+                the final word on the mark, ahead of the product photos. The close-up shot gets an
+                extra crop.
+              </p>
+            ) : (
+              <p className="hex-note">
+                Without this, the engine redraws the mark from the product photos and usually softens
+                or mirrors it. One sharp square-on macro is the biggest single fix for logo defects.
+              </p>
+            )}
           </div>
 
           {!isKids && (

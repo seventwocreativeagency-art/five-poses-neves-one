@@ -270,6 +270,54 @@ check("strict mode drops that line when recolouring", !strictYes.includes("- Pre
 check("strict mode still protects print colours when recolouring", strictYes.includes("Preserve the source colours of every print"));
 check("recolour is listed as a permitted change", strictYes.includes("base colour of the primary product"));
 
+// ---------------------------------------------------------------------------
+// Logo / emblem reference
+// ---------------------------------------------------------------------------
+
+const logoGroup = poses.REF_GROUPS.find((g) => g.id === "logo");
+check("a logo reference group exists", !!logoGroup);
+check("the logo group is optional", logoGroup.optional === true);
+check("the logo group caps at 3", logoGroup.cap === 3);
+check("the logo group sits directly after the product", poses.REF_GROUPS.findIndex((g) => g.id === "logo") === poses.REF_GROUPS.findIndex((g) => g.id === "garment") + 1);
+check("a role label exists for the logo", /EMBLEM/.test(poses.ROLE_LABELS.logo));
+
+const noLogo = poses.buildPrompt({ posePrompt: "front", productDesc: "polo" });
+const withLogo = poses.buildPrompt({ posePrompt: "front", productDesc: "polo", hasLogo: true });
+
+check("no logo block when none is uploaded", !noLogo.includes("LOGO / EMBLEM"));
+check("logo block appears when one is uploaded", withLogo.includes("LOGO / EMBLEM"));
+check("logo block forbids mirroring", /Never mirror it/.test(withLogo));
+check("logo block forbids redrawing from memory", /redraw the mark from memory/.test(withLogo));
+check("logo block demands it survive full zoom", /100 percent/.test(withLogo));
+check("logo block outranks the other references", /outranks every other image/.test(withLogo));
+check("logo is listed in the reference order sentence", /MACRO OF THE BRAND EMBLEM/.test(withLogo));
+
+const noteOnly = poses.buildPrompt({ posePrompt: "front", logoNote: "left chest, 5cm" });
+check("a placement note alone still reaches the prompt", noteOnly.includes("left chest, 5cm"));
+check("a placement note alone does not claim a macro exists", !/outranks every other image/.test(noteOnly));
+
+const bothLogo = poses.buildPrompt({ posePrompt: "front", hasLogo: true, logoNote: "left chest, pony faces right" });
+check("macro and placement note combine", /outranks every other image/.test(bothLogo) && bothLogo.includes("pony faces right"));
+
+check("reframe carries the logo block", poses.buildReframePrompt({ posePrompt: "side", hasLogo: true }).includes("LOGO / EMBLEM"));
+check("refine carries the logo block", poses.buildRefinePrompt("fix the cuff", { hasLogo: true }).includes("LOGO / EMBLEM"));
+check("kidswear carries the logo block", poses.buildKidsPrompt({ slotFraming: "front", ageBand: "4-6", hasLogo: true }).includes("LOGO / EMBLEM"));
+check("kidswear without a logo is unchanged", !poses.buildKidsPrompt({ slotFraming: "front", ageBand: "4-6" }).includes("LOGO / EMBLEM"));
+
+// Recolouring must never touch the mark.
+const logoAndColour = poses.buildPrompt({ posePrompt: "front", hasLogo: true, colour: colour.colourPhrase("#1B2A4A") });
+check("logo and colour blocks coexist", logoAndColour.includes("LOGO / EMBLEM") && logoAndColour.includes("PRODUCT COLOUR OVERRIDE"));
+check("a recolour still protects the emblem", logoAndColour.includes("ARE NOT RECOLOURED"));
+
+// Role lines must number the images correctly once the logo is in the order.
+const logoLines = poses.buildRoleLines([
+  { group: "garment", count: 3 },
+  { group: "logo", count: 2 },
+  { group: "model", count: 2 },
+]);
+check("role lines number the logo images correctly", logoLines.includes("Images 4\u20135") && /Images 4\u20135 are a MACRO|Images 4\u20135 are/.test(logoLines));
+check("role lines put the model after the logo", logoLines.includes("Images 6\u20137"));
+
 rmSync(tmp, { recursive: true, force: true });
 
 console.log(`\n${pass} passed, ${fails.length} failed`);

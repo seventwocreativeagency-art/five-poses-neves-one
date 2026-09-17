@@ -55,6 +55,44 @@ The app has also been rebranded to NEVES ONE.
 
 ---
 
+## Logo / emblem reference
+
+Section 1, under the garment colour code. Optional, up to three crops.
+
+Upload a tight, sharp, square-on macro of the brand mark exactly as it appears on
+this product. Well lit, filling the frame. This is the single highest-value
+reference in the app: without it the engine redraws the mark from whatever it can
+make out in the product photos, which is how marks come back softened, mirrored,
+missing elements, or redrawn as a different brand's logo entirely.
+
+What the app does with it:
+
+- **Sends it at higher resolution than everything else.** Always at least 1536px
+  regardless of the Detail setting. A 1024px logo crop is the main reason marks
+  come back as approximations.
+- **Places it directly after the product** in the reference order, where engines
+  weight it most heavily.
+- **Declares it the ground truth for the mark**, outranking the product photos and
+  the identity anchor.
+- **Sends an extra crop on the close-up**, which is the shot where a mangled
+  emblem is actually visible to a client.
+
+The prompt block that comes with it forbids mirroring and flipping, forbids
+redrawing from memory, requires the exact facing direction, requires every
+internal shape and the correct element count, requires any text in the mark to be
+spelled and set exactly, and requires the mark to survive at 100 percent zoom
+rather than only working at thumbnail size. It also requires the mark to sit flat
+on the fabric and follow the drape, rather than looking like a sticker.
+
+There is a placement note field under it. Use it for things a macro cannot show,
+for example "left chest, about 5 cm wide, pony faces right". The note works on its
+own without a macro, but a macro is worth far more.
+
+The logo carries through all four paths: the five-pose set, reframes, refine
+passes and kidswear. A recolour never touches the mark.
+
+---
+
 ## Garment colour code
 
 Section 1, under the secondary product. Leave it blank and the product colour is
